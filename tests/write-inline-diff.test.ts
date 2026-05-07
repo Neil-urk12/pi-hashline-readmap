@@ -70,7 +70,7 @@ describe("write inline diff rendering", () => {
 			path: fp,
 			language: "typescript",
 			content: "const value = 1;\n",
-			lines: 2,
+			lines: 1,
 		});
 	});
 

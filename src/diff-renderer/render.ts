@@ -206,18 +206,43 @@ async function renderSplit(
 	const code = limited.lines.map((line) => line.content).join("\n");
 	const highlighted = await highlightLines(code, options.language);
 	const rows: string[] = [];
+	const codeTextAt = (index: number): string =>
+		wordHighlights.get(index) ??
+		highlighted[index] ??
+		limited.lines[index]?.content ??
+		"";
 
 	for (let i = 0; i < limited.lines.length; i++) {
 		const line = limited.lines[i]!;
-		const codeText = wordHighlights.get(i) ?? highlighted[i] ?? line.content;
-		const left =
-			line.type === "del"
-				? `${BG_DEL}${FG_DEL}-${lineNumber(line.oldNum, lineWidth)} │ ${codeText}${RESET}`
-				: `${DIM} ${lineNumber(line.oldNum, lineWidth)} │ ${line.type === "add" ? "" : codeText}${RESET}`;
-		const right =
-			line.type === "add"
-				? `${BG_ADD}${FG_ADD}+${lineNumber(line.newNum, lineWidth)} │ ${codeText}${RESET}`
-				: `${DIM} ${lineNumber(line.newNum, lineWidth)} │ ${line.type === "del" ? "" : codeText}${RESET}`;
+		const next =
+			i + 1 < limited.lines.length ? limited.lines[i + 1] : undefined;
+
+		if (line.type === "del" && next?.type === "add") {
+			const leftCode = codeTextAt(i);
+			const rightCode = codeTextAt(i + 1);
+			const left = `${BG_DEL}${FG_DEL}-${lineNumber(line.oldNum, lineWidth)} │ ${leftCode}${RESET}`;
+			const right = `${BG_ADD}${FG_ADD}+${lineNumber(next.newNum, lineWidth)} │ ${rightCode}${RESET}`;
+			rows.push(`${fit(left, half)} │ ${fit(right, half)}`);
+			i++;
+			continue;
+		}
+
+		const codeText = codeTextAt(i);
+		if (line.type === "del") {
+			const left = `${BG_DEL}${FG_DEL}-${lineNumber(line.oldNum, lineWidth)} │ ${codeText}${RESET}`;
+			const right = `${DIM} ${lineNumber(undefined, lineWidth)} │ ${RESET}`;
+			rows.push(`${fit(left, half)} │ ${fit(right, half)}`);
+			continue;
+		}
+		if (line.type === "add") {
+			const left = `${DIM} ${lineNumber(undefined, lineWidth)} │ ${RESET}`;
+			const right = `${BG_ADD}${FG_ADD}+${lineNumber(line.newNum, lineWidth)} │ ${codeText}${RESET}`;
+			rows.push(`${fit(left, half)} │ ${fit(right, half)}`);
+			continue;
+		}
+
+		const left = `${DIM} ${lineNumber(line.oldNum, lineWidth)} │ ${codeText}${RESET}`;
+		const right = `${DIM} ${lineNumber(line.newNum, lineWidth)} │ ${codeText}${RESET}`;
 		rows.push(`${fit(left, half)} │ ${fit(right, half)}`);
 	}
 

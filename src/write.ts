@@ -178,6 +178,10 @@ export async function executeWrite(opts: {
 
 	// Compute hashlines
 	const rawLines = content.split("\n");
+	const displayLineCount =
+		rawLines.length > 0 && rawLines[rawLines.length - 1] === ""
+			? rawLines.length - 1
+			: rawLines.length;
 	const ptcLines: PtcLine[] = [];
 	const displayLines: string[] = [];
 
@@ -245,7 +249,7 @@ export async function executeWrite(opts: {
 			path: filePath,
 			language,
 			content,
-			lines: rawLines.length,
+			lines: displayLineCount,
 		};
 	}
 

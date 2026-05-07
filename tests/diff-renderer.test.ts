@@ -56,6 +56,20 @@ describe("diff renderer output", () => {
 		expect(rendered.split("\n").length).toBeLessThanOrEqual(10);
 	});
 
+	it("pairs single-line replacement into one split row", async () => {
+		const parsed = parseInlineDiff("value\n", "VALUE\n");
+		const rendered = await renderInlineDiff(parsed, {
+			language: "typescript",
+			maxLines: 8,
+			width: 160,
+		});
+		const plain = rendered.replace(/\u001b\[[0-9;]*m/g, "");
+
+		expect(plain.split("\n").length).toBe(1);
+		expect(plain).toContain("-1 │");
+		expect(plain).toContain("+1 │");
+	});
+
 	it("renders a bounded new-file preview", async () => {
 		const rendered = await renderNewFilePreview(
 			"const value = 1;\nconst other = 2;\n",
