@@ -16,6 +16,7 @@ const FG_ADD = "\u001b[38;2;100;180;120m";
 const FG_DEL = "\u001b[38;2;200;100;100m";
 const FG_DIM = "\u001b[38;2;120;120;120m";
 const THEME = process.env.DIFF_THEME ?? "github-dark";
+const HIGHLIGHT_TIMEOUT_MS = 2_000;
 
 const highlightCache = new Map<string, string[]>();
 
@@ -49,13 +50,22 @@ function cacheSet(key: string, value: string[]): string[] {
   return value;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("Shiki highlight timed out")), ms).unref?.();
+    }),
+  ]);
+}
+
 async function highlightLines(code: string, language: string): Promise<string[]> {
   if (!code || code.length > MAX_HL_CHARS) return code.split("\n");
   const key = `${THEME}:${language}:${code.length}:${code}`;
   const cached = highlightCache.get(key);
   if (cached) return cached;
   try {
-    const highlighted = await codeToANSI(code, language as any, THEME as any);
+    const highlighted = await withTimeout(codeToANSI(code, language as any, THEME as any), HIGHLIGHT_TIMEOUT_MS);
     return cacheSet(key, highlighted.replace(/\n$/, "").split("\n"));
   } catch {
     return code.replace(/\n$/, "").split("\n");

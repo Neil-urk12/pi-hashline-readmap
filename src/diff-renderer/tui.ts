@@ -7,6 +7,7 @@ const COLLAPSED_DIFF_LINES = 24;
 const EXPANDED_DIFF_LINES = 120;
 const COLLAPSED_NEW_LINES = 12;
 const EXPANDED_NEW_LINES = 80;
+const MAX_DIFF_INPUT_CHARS = 200_000;
 
 function terminalWidth(): number {
   return Math.max(40, process.stdout.columns || DEFAULT_WIDTH);
@@ -21,6 +22,12 @@ function themeKey(theme: any): string {
   }
 }
 
+function metadataFingerprint(metadata: InlineDiffMetadata): string {
+  if (metadata.kind === "no-change") return metadata.kind;
+  if (metadata.kind === "new-file") return `${metadata.kind}:${metadata.content.length}:${metadata.content.slice(0, 64)}:${metadata.content.slice(-64)}`;
+  return `${metadata.kind}:${metadata.summary}:${metadata.oldContent.length}:${metadata.newContent.length}:${metadata.oldContent.slice(0, 64)}:${metadata.newContent.slice(0, 64)}:${metadata.oldContent.slice(-64)}:${metadata.newContent.slice(-64)}`;
+}
+
 export function formatInlineDiffHeader(metadata: InlineDiffMetadata, theme: any): string {
   if (metadata.kind === "diff") return `  ${theme.fg("success", metadata.summary)} ${theme.fg("muted", metadata.path)}`;
   if (metadata.kind === "new-file") return `  ${theme.fg("success", `✓ new file (${metadata.lines} lines)`)} ${theme.fg("muted", metadata.path)}`;
@@ -30,16 +37,24 @@ export function formatInlineDiffHeader(metadata: InlineDiffMetadata, theme: any)
 export function renderInlineDiffMetadata(metadata: InlineDiffMetadata, theme: any, ctx: any, expanded: boolean): string {
   if (metadata.kind === "no-change") return formatInlineDiffHeader(metadata, theme);
 
+  if (metadata.kind === "diff" && metadata.oldContent.length + metadata.newContent.length > MAX_DIFF_INPUT_CHARS) {
+    return `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  diff too large for inline rendering")}`;
+  }
+  if (metadata.kind === "new-file" && metadata.content.length > MAX_DIFF_INPUT_CHARS) {
+    return `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  file too large for inline preview")}`;
+  }
+
   const width = terminalWidth();
   const maxLines = expanded
     ? metadata.kind === "new-file" ? EXPANDED_NEW_LINES : EXPANDED_DIFF_LINES
     : metadata.kind === "new-file" ? COLLAPSED_NEW_LINES : COLLAPSED_DIFF_LINES;
-  const key = JSON.stringify({ metadata, width, maxLines, theme: themeKey(theme) });
+  const key = JSON.stringify({ fingerprint: metadataFingerprint(metadata), path: metadata.path, width, maxLines, theme: themeKey(theme) });
   const state = ctx.state ?? (ctx.state = {});
 
   if (state.inlineDiffKey !== key) {
     state.inlineDiffKey = key;
     state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  rendering diff…")}`;
+    state.inlineDiffFailed = false;
 
     const renderPromise = metadata.kind === "diff"
       ? renderInlineDiff(parseInlineDiff(metadata.oldContent, metadata.newContent), {
@@ -59,11 +74,13 @@ export function renderInlineDiffMetadata(metadata: InlineDiffMetadata, theme: an
       .then((rendered) => {
         if (state.inlineDiffKey !== key) return;
         state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${rendered}`;
+        state.inlineDiffFailed = false;
         ctx.invalidate?.();
       })
       .catch(() => {
         if (state.inlineDiffKey !== key) return;
-        state.inlineDiffText = formatInlineDiffHeader(metadata, theme);
+        state.inlineDiffFailed = true;
+        state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  inline diff unavailable")}`;
         ctx.invalidate?.();
       });
   }
