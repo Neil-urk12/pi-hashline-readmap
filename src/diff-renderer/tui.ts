@@ -68,7 +68,7 @@ export function renderInlineDiffMetadata(
 		return `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  file too large for inline preview")}`;
 	}
 
-	const width = terminalWidth();
+	const width = Math.max(60, terminalWidth() - 4);
 	const maxLines = expanded
 		? metadata.kind === "new-file"
 			? EXPANDED_NEW_LINES

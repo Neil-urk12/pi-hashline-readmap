@@ -66,7 +66,7 @@ describe("diff renderer output", () => {
 		});
 		const plain = rendered.replace(/\u001b\[[0-9;]*m/g, "");
 
-		expect(plain.split("\n").length).toBe(3);
+		expect(plain.split("\n").length).toBe(1);
 		expect(plain).toContain("1 - value");
 		expect(plain).toContain("1 + VALUE");
 	});
@@ -84,11 +84,11 @@ describe("diff renderer output", () => {
 		const plain = rendered.replace(/\u001b\[[0-9;]*m/g, "");
 		const lines = plain.split("\n");
 
-		expect(lines.length).toBe(5);
-		expect(lines[1]).toContain("1 - export const a");
-		expect(lines[1]).toContain("1 + export const a");
-		expect(lines[3]).toContain("3 - export const c");
-		expect(lines[3]).toContain("3 + export const c");
+		expect(lines.length).toBe(3);
+		expect(lines[0]).toContain("1 - export const a");
+		expect(lines[0]).toContain("1 + export const a");
+		expect(lines[2]).toContain("3 - export const c");
+		expect(lines[2]).toContain("3 + export const c");
 	});
 
 	it("renders metadata diff synchronously without loading placeholder", () => {

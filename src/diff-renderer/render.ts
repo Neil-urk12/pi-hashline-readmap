@@ -240,9 +240,10 @@ function renderSplit(
 	diff: ParsedInlineDiff,
 	options: RenderInlineDiffOptions,
 ): string {
-	if (options.width < 120) return renderUnified(diff, options);
-	const tableWidth = Math.max(80, options.width);
-	const innerWidth = tableWidth - 3;
+	if (options.width < 100) return renderUnified(diff, options);
+	const totalWidth = Math.max(80, options.width);
+	const dividerWidth = 1;
+	const innerWidth = totalWidth - dividerWidth;
 	const half = Math.max(30, Math.floor(innerWidth / 2));
 	const rightHalf = Math.max(30, innerWidth - half);
 	const limited = limitLines(compactContextLines(diff.lines), options.maxLines);
@@ -261,8 +262,6 @@ function renderSplit(
 		highlighted[index] ??
 		limited.lines[index]?.content ??
 		"";
-	const top = `${DIM}┌${"─".repeat(half)}┬${"─".repeat(rightHalf)}┐${RESET}`;
-	const bottom = `${DIM}└${"─".repeat(half)}┴${"─".repeat(rightHalf)}┘${RESET}`;
 	const mid = `${DIM}│${RESET}`;
 	const gutter = (value: number | undefined, sign: string) =>
 		`${lineNumber(value, lineWidth)} ${sign} `;
@@ -291,10 +290,8 @@ function renderSplit(
 			: ` ${padVisible(fitted, contentWidth)} `;
 	};
 	const pushPair = (left: string, right: string) => {
-		rows.push(`${mid}${left}${mid}${right}${mid}`);
+		rows.push(`${left}${mid}${right}`);
 	};
-
-	rows.push(top);
 
 	for (let i = 0; i < limited.lines.length; i++) {
 		const line = limited.lines[i]!;
@@ -334,7 +331,6 @@ function renderSplit(
 		pushPair(cell(line, "old", i, half), cell(line, "new", i, rightHalf));
 	}
 
-	rows.push(bottom);
 	if (limited.omitted > 0)
 		rows.push(`${DIM}… ${limited.omitted} more diff lines${RESET}`);
 	return rows.join("\n");
