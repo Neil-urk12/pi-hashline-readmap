@@ -37,6 +37,11 @@ function fit(value: string, width: number): string {
 	return `${plain.slice(0, Math.max(0, width - 1))}…`;
 }
 
+function padVisible(value: string, width: number): string {
+	const pad = Math.max(0, width - visibleLength(value));
+	return `${value}${" ".repeat(pad)}`;
+}
+
 function lineNumber(value: number | undefined, width: number): string {
 	return value === undefined
 		? " ".repeat(width)
@@ -46,6 +51,20 @@ function lineNumber(value: number | undefined, width: number): string {
 function keepBackgroundAcrossResets(value: string, bg: string): string {
 	if (!bg || !value.includes(RESET)) return value;
 	return value.replaceAll(RESET, `${RESET}${bg}`);
+}
+
+function sgrClearsBackground(code: string): boolean {
+	const match = code.match(/^\u001b\[([0-9;]*)m$/);
+	if (!match) return false;
+	const params = match[1] ? match[1].split(";").map((v) => Number.parseInt(v || "0", 10)) : [0];
+	return params.some((v) => v === 0 || v === 49);
+}
+
+function reapplyBg(value: string, bg: string): string {
+	if (!bg || !value.includes(RESET)) return value;
+	return value.replace(new RegExp(RESET.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), (code) =>
+		sgrClearsBackground(code) ? `${code}${bg}` : code,
+	);
 }
 
 function fitColumn(value: string, width: number, padBg = ""): string {
@@ -104,6 +123,7 @@ function injectRanges(
 	text: string,
 	ranges: Array<[number, number]>,
 	bg: string,
+	fg = "",
 ): string {
 	if (!ranges.length) return text;
 	const plain = stripAnsi(text);
@@ -111,11 +131,11 @@ function injectRanges(
 	let cursor = 0;
 	for (const [start, end] of ranges) {
 		if (start > cursor) out += plain.slice(cursor, start);
-		out += `${bg}${plain.slice(start, end)}${RESET}`;
+		out += `${bg}${fg}${plain.slice(start, end)}${RESET}${fg ? `${fg}${bg}` : bg}`;
 		cursor = end;
 	}
 	out += plain.slice(cursor);
-	return out;
+	return fg ? `${fg}${out}` : out;
 }
 
 function pairWordHighlights(lines: InlineDiffLine[]): Map<number, string> {
@@ -127,11 +147,11 @@ function pairWordHighlights(lines: InlineDiffLine[]): Map<number, string> {
 		const ranges = changedWordRanges(oldLine.content, newLine.content);
 		highlighted.set(
 			i,
-			injectRanges(oldLine.content, ranges.oldRanges, BG_DEL_WORD),
+			injectRanges(oldLine.content, ranges.oldRanges, BG_DEL_WORD, FG_DEL),
 		);
 		highlighted.set(
 			i + 1,
-			injectRanges(newLine.content, ranges.newRanges, BG_ADD_WORD),
+			injectRanges(newLine.content, ranges.newRanges, BG_ADD_WORD, FG_ADD),
 		);
 	}
 	return highlighted;
@@ -143,6 +163,40 @@ function limitLines(
 ): { lines: InlineDiffLine[]; omitted: number } {
 	if (lines.length <= maxLines) return { lines, omitted: 0 };
 	return { lines: lines.slice(0, maxLines), omitted: lines.length - maxLines };
+}
+
+function compactContextLines(
+	lines: InlineDiffLine[],
+	edgeContext = 3,
+): InlineDiffLine[] {
+	const changed = new Set<number>();
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i]?.type === "add" || lines[i]?.type === "del") {
+			for (
+				let j = Math.max(0, i - edgeContext);
+				j <= Math.min(lines.length - 1, i + edgeContext);
+				j++
+			)
+				changed.add(j);
+		}
+	}
+	if (changed.size === 0) return lines;
+	const out: InlineDiffLine[] = [];
+	let omitted = 0;
+	for (let i = 0; i < lines.length; i++) {
+		if (changed.has(i)) {
+			if (omitted > 0) {
+				out.push({ type: "sep", content: `… ${omitted} unchanged lines …` });
+				omitted = 0;
+			}
+			out.push(lines[i]!);
+		} else {
+			omitted += 1;
+		}
+	}
+	if (omitted > 0)
+		out.push({ type: "sep", content: `… ${omitted} unchanged lines …` });
+	return out;
 }
 
 function renderUnified(
@@ -187,8 +241,11 @@ function renderSplit(
 	options: RenderInlineDiffOptions,
 ): string {
 	if (options.width < 120) return renderUnified(diff, options);
-	const half = Math.max(30, Math.floor((options.width - 3) / 2));
-	const limited = limitLines(diff.lines, options.maxLines);
+	const tableWidth = Math.max(80, options.width);
+	const innerWidth = tableWidth - 3;
+	const half = Math.max(30, Math.floor(innerWidth / 2));
+	const rightHalf = Math.max(30, innerWidth - half);
+	const limited = limitLines(compactContextLines(diff.lines), options.maxLines);
 	const lineWidth = Math.max(
 		1,
 		String(
@@ -204,24 +261,48 @@ function renderSplit(
 		highlighted[index] ??
 		limited.lines[index]?.content ??
 		"";
-	const columnBg = (value: string): string =>
-		value.startsWith(BG_DEL) ? BG_DEL : value.startsWith(BG_ADD) ? BG_ADD : "";
-	const joinCols = (left: string, right: string) =>
-		`${fitColumn(left, half, columnBg(left))} │ ${fitColumn(right, half, columnBg(right))}`;
-	const blankLeft = `${DIM} ${lineNumber(undefined, lineWidth)} │${RESET}`;
-	const blankRight = blankLeft;
-	const border = `${DIM}${"─".repeat(half)}─┬─${"─".repeat(half)}${RESET}`;
+	const top = `${DIM}┌${"─".repeat(half)}┬${"─".repeat(rightHalf)}┐${RESET}`;
+	const bottom = `${DIM}└${"─".repeat(half)}┴${"─".repeat(rightHalf)}┘${RESET}`;
+	const mid = `${DIM}│${RESET}`;
+	const gutter = (value: number | undefined, sign: string) =>
+		`${lineNumber(value, lineWidth)} ${sign} `;
+	const cell = (
+		line: InlineDiffLine | undefined,
+		side: "old" | "new",
+		index: number,
+		width: number,
+	): string => {
+		if (!line) return " ".repeat(width);
+		if (line.type === "sep")
+			return padVisible(`${DIM}${line.content}${RESET}`, width);
+		const isAdd = line.type === "add";
+		const isDel = line.type === "del";
+		const active = (side === "old" && !isAdd) || (side === "new" && !isDel);
+		if (!active) return " ".repeat(width);
+		const sign = isAdd ? "+" : isDel ? "-" : " ";
+		const num = side === "old" ? line.oldNum : line.newNum;
+		const fg = isAdd ? FG_ADD : isDel ? FG_DEL : FG_DIM;
+		const bg = isAdd ? BG_ADD : isDel ? BG_DEL : "";
+		const contentWidth = Math.max(1, width - 2);
+		const body = `${gutter(num, sign)}${codeTextAt(index)}`;
+		const fitted = fit(`${fg}${body}${RESET}`, contentWidth);
+		return bg
+			? `${bg} ${reapplyBg(padVisible(fitted, contentWidth), bg)} ${RESET}`
+			: ` ${padVisible(fitted, contentWidth)} `;
+	};
+	const pushPair = (left: string, right: string) => {
+		rows.push(`${mid}${left}${mid}${right}${mid}`);
+	};
 
-	rows.push(border);
-	rows.push(
-		joinCols(
-			`${DIM}${"old".padStart(Math.max(3, lineWidth + 2), " ")}${RESET}`,
-			`${DIM}${"new".padStart(Math.max(3, lineWidth + 2), " ")}${RESET}`,
-		),
-	);
+	rows.push(top);
 
 	for (let i = 0; i < limited.lines.length; i++) {
 		const line = limited.lines[i]!;
+		if (line.type === "sep") {
+			const text = `${DIM}${line.content}${RESET}`;
+			pushPair(padVisible(text, half), padVisible(text, rightHalf));
+			continue;
+		}
 
 		if (line.type === "del") {
 			const delStart = i;
@@ -235,15 +316,10 @@ function renderSplit(
 			for (let row = 0; row < rowCount; row++) {
 				const oldIndex = delStart + row;
 				const newIndex = addStart + row;
-				const oldLine = oldIndex < delEnd ? limited.lines[oldIndex] : undefined;
-				const newLine = newIndex < addEnd ? limited.lines[newIndex] : undefined;
-				const left = oldLine
-					? `${BG_DEL}${FG_DEL}-${lineNumber(oldLine.oldNum, lineWidth)} │ ${codeTextAt(oldIndex)}${RESET}`
-					: blankLeft;
-				const right = newLine
-					? `${BG_ADD}${FG_ADD}+${lineNumber(newLine.newNum, lineWidth)} │ ${codeTextAt(newIndex)}${RESET}`
-					: blankRight;
-				rows.push(joinCols(left, right));
+				pushPair(
+					cell(limited.lines[oldIndex], "old", oldIndex, half),
+					cell(limited.lines[newIndex], "new", newIndex, rightHalf),
+				);
 			}
 
 			i--;
@@ -251,17 +327,14 @@ function renderSplit(
 		}
 
 		if (line.type === "add") {
-			const right = `${BG_ADD}${FG_ADD}+${lineNumber(line.newNum, lineWidth)} │ ${codeTextAt(i)}${RESET}`;
-			rows.push(joinCols(blankLeft, right));
+			pushPair(" ".repeat(half), cell(line, "new", i, rightHalf));
 			continue;
 		}
 
-		const codeText = codeTextAt(i);
-		const left = `${DIM} ${lineNumber(line.oldNum, lineWidth)} │ ${codeText}${RESET}`;
-		const right = `${DIM} ${lineNumber(line.newNum, lineWidth)} │ ${codeText}${RESET}`;
-		rows.push(joinCols(left, right));
+		pushPair(cell(line, "old", i, half), cell(line, "new", i, rightHalf));
 	}
 
+	rows.push(bottom);
 	if (limited.omitted > 0)
 		rows.push(`${DIM}… ${limited.omitted} more diff lines${RESET}`);
 	return rows.join("\n");

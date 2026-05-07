@@ -1,4 +1,4 @@
-export type InlineDiffLineType = "ctx" | "add" | "del";
+export type InlineDiffLineType = "ctx" | "add" | "del" | "sep";
 
 export interface InlineDiffLine {
 	type: InlineDiffLineType;

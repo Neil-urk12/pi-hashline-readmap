@@ -67,8 +67,8 @@ describe("diff renderer output", () => {
 		const plain = rendered.replace(/\u001b\[[0-9;]*m/g, "");
 
 		expect(plain.split("\n").length).toBe(3);
-		expect(plain).toContain("-1 │");
-		expect(plain).toContain("+1 │");
+		expect(plain).toContain("1 - value");
+		expect(plain).toContain("1 + VALUE");
 	});
 
 	it("pairs multi-line replacement blocks row-by-row", async () => {
@@ -85,10 +85,10 @@ describe("diff renderer output", () => {
 		const lines = plain.split("\n");
 
 		expect(lines.length).toBe(5);
-		expect(lines[2]).toContain("-1 │");
-		expect(lines[2]).toContain("+1 │");
-		expect(lines[4]).toContain("-3 │");
-		expect(lines[4]).toContain("+3 │");
+		expect(lines[1]).toContain("1 - export const a");
+		expect(lines[1]).toContain("1 + export const a");
+		expect(lines[3]).toContain("3 - export const c");
+		expect(lines[3]).toContain("3 + export const c");
 	});
 
 	it("renders metadata diff synchronously without loading placeholder", () => {
