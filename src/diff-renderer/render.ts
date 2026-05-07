@@ -1,5 +1,5 @@
+import { highlightCode } from "@mariozechner/pi-coding-agent";
 // Portions adapted from @heyhuynhgiabuu/pi-diff by huynhgiabuu, MIT License.
-import { codeToANSI } from "@shikijs/cli";
 import * as Diff from "diff";
 import type {
 	InlineDiffLine,
@@ -19,8 +19,6 @@ const BG_DEL_WORD = "\u001b[48;2;80;35;35m";
 const FG_ADD = "\u001b[38;2;100;180;120m";
 const FG_DEL = "\u001b[38;2;200;100;100m";
 const FG_DIM = "\u001b[38;2;120;120;120m";
-const THEME = process.env.DIFF_THEME ?? "github-dark";
-const HIGHLIGHT_TIMEOUT_MS = 2_000;
 
 const highlightCache = new Map<string, string[]>();
 
@@ -45,11 +43,18 @@ function lineNumber(value: number | undefined, width: number): string {
 		: String(value).padStart(width, " ");
 }
 
-function fitColumn(value: string, width: number): string {
+function keepBackgroundAcrossResets(value: string, bg: string): string {
+	if (!bg || !value.includes(RESET)) return value;
+	return value.replaceAll(RESET, `${RESET}${bg}`);
+}
+
+function fitColumn(value: string, width: number, padBg = ""): string {
 	if (width <= 0) return "";
-	const visible = visibleLength(value);
-	if (visible > width) return fit(value, width);
-	return `${value}${" ".repeat(width - visible)}`;
+	const fitted = visibleLength(value) > width ? fit(value, width) : value;
+	const pad = Math.max(0, width - visibleLength(fitted));
+	if (!padBg) return `${fitted}${" ".repeat(pad)}`;
+	const stable = keepBackgroundAcrossResets(fitted, padBg);
+	return `${padBg}${stable}${" ".repeat(pad)}${RESET}`;
 }
 
 function cacheSet(key: string, value: string[]): string[] {
@@ -63,32 +68,13 @@ function cacheSet(key: string, value: string[]): string[] {
 	return value;
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-	return Promise.race([
-		promise,
-		new Promise<T>((_resolve, reject) => {
-			setTimeout(
-				() => reject(new Error("Shiki highlight timed out")),
-				ms,
-			).unref?.();
-		}),
-	]);
-}
-
-async function highlightLines(
-	code: string,
-	language: string,
-): Promise<string[]> {
+function highlightLines(code: string, language: string): string[] {
 	if (!code || code.length > MAX_HL_CHARS) return code.split("\n");
-	const key = `${THEME}:${language}:${code.length}:${code}`;
+	const key = `${language}:${code.length}:${code}`;
 	const cached = highlightCache.get(key);
 	if (cached) return cached;
 	try {
-		const highlighted = await withTimeout(
-			codeToANSI(code, language as any, THEME as any),
-			HIGHLIGHT_TIMEOUT_MS,
-		);
-		return cacheSet(key, highlighted.replace(/\n$/, "").split("\n"));
+		return cacheSet(key, highlightCode(code, language));
 	} catch {
 		return code.replace(/\n$/, "").split("\n");
 	}
@@ -159,10 +145,10 @@ function limitLines(
 	return { lines: lines.slice(0, maxLines), omitted: lines.length - maxLines };
 }
 
-async function renderUnified(
+function renderUnified(
 	diff: ParsedInlineDiff,
 	options: RenderInlineDiffOptions,
-): Promise<string> {
+): string {
 	const limited = limitLines(diff.lines, options.maxLines);
 	const lineWidth = Math.max(
 		1,
@@ -172,7 +158,7 @@ async function renderUnified(
 	);
 	const wordHighlights = pairWordHighlights(limited.lines);
 	const code = limited.lines.map((line) => line.content).join("\n");
-	const highlighted = await highlightLines(code, options.language);
+	const highlighted = highlightLines(code, options.language);
 	const rows: string[] = [];
 
 	for (let i = 0; i < limited.lines.length; i++) {
@@ -196,10 +182,10 @@ async function renderUnified(
 	return rows.join("\n");
 }
 
-async function renderSplit(
+function renderSplit(
 	diff: ParsedInlineDiff,
 	options: RenderInlineDiffOptions,
-): Promise<string> {
+): string {
 	if (options.width < 120) return renderUnified(diff, options);
 	const half = Math.max(30, Math.floor((options.width - 3) / 2));
 	const limited = limitLines(diff.lines, options.maxLines);
@@ -211,18 +197,22 @@ async function renderSplit(
 	);
 	const wordHighlights = pairWordHighlights(limited.lines);
 	const code = limited.lines.map((line) => line.content).join("\n");
-	const highlighted = await highlightLines(code, options.language);
+	const highlighted = highlightLines(code, options.language);
 	const rows: string[] = [];
 	const codeTextAt = (index: number): string =>
 		wordHighlights.get(index) ??
 		highlighted[index] ??
 		limited.lines[index]?.content ??
 		"";
+	const columnBg = (value: string): string =>
+		value.startsWith(BG_DEL) ? BG_DEL : value.startsWith(BG_ADD) ? BG_ADD : "";
 	const joinCols = (left: string, right: string) =>
-		`${fitColumn(left, half)} │ ${fitColumn(right, half)}`;
+		`${fitColumn(left, half, columnBg(left))} │ ${fitColumn(right, half, columnBg(right))}`;
 	const blankLeft = `${DIM} ${lineNumber(undefined, lineWidth)} │${RESET}`;
 	const blankRight = blankLeft;
+	const border = `${DIM}${"─".repeat(half)}─┬─${"─".repeat(half)}${RESET}`;
 
+	rows.push(border);
 	rows.push(
 		joinCols(
 			`${DIM}${"old".padStart(Math.max(3, lineWidth + 2), " ")}${RESET}`,
@@ -277,21 +267,21 @@ async function renderSplit(
 	return rows.join("\n");
 }
 
-export async function renderInlineDiff(
+export function renderInlineDiff(
 	diff: ParsedInlineDiff,
 	options: RenderInlineDiffOptions,
-): Promise<string> {
+): string {
 	return renderSplit(diff, options);
 }
 
-export async function renderNewFilePreview(
+export function renderNewFilePreview(
 	content: string,
 	options: RenderInlineDiffOptions,
-): Promise<string> {
+): string {
 	const rawLines = content.split("\n");
 	if (rawLines[rawLines.length - 1] === "") rawLines.pop();
 	const shown = rawLines.slice(0, options.maxLines);
-	const highlighted = await highlightLines(shown.join("\n"), options.language);
+	const highlighted = highlightLines(shown.join("\n"), options.language);
 	const rows = highlighted.map((line, index) =>
 		fit(
 			`${DIM}${String(index + 1).padStart(4, " ")} │${RESET} ${line}`,

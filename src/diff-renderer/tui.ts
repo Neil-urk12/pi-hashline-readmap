@@ -39,9 +39,9 @@ export function formatInlineDiffHeader(
 	theme: any,
 ): string {
 	if (metadata.kind === "diff")
-		return `  ${theme.fg("success", metadata.summary)} ${theme.fg("muted", metadata.path)}`;
+		return `  ${theme.fg("success", metadata.summary)}`;
 	if (metadata.kind === "new-file")
-		return `  ${theme.fg("success", `✓ new file (${metadata.lines} lines)`)} ${theme.fg("muted", metadata.path)}`;
+		return `  ${theme.fg("success", `✓ new file (${metadata.lines} lines)`)}`;
 	return `  ${theme.fg("muted", "✓ no changes")}`;
 }
 
@@ -90,37 +90,30 @@ export function renderInlineDiffMetadata(
 		state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  rendering diff…")}`;
 		state.inlineDiffFailed = false;
 
-		const renderPromise =
-			metadata.kind === "diff"
-				? renderInlineDiff(
-						parseInlineDiff(metadata.oldContent, metadata.newContent),
-						{
+		try {
+			const rendered =
+				metadata.kind === "diff"
+					? renderInlineDiff(
+							parseInlineDiff(metadata.oldContent, metadata.newContent),
+							{
+								language: metadata.language,
+								maxLines,
+								width,
+								theme,
+							},
+						)
+					: renderNewFilePreview(metadata.content, {
 							language: metadata.language,
 							maxLines,
 							width,
 							theme,
-						},
-					)
-				: renderNewFilePreview(metadata.content, {
-						language: metadata.language,
-						maxLines,
-						width,
-						theme,
-					});
-
-		renderPromise
-			.then((rendered) => {
-				if (state.inlineDiffKey !== key) return;
-				state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${rendered}`;
-				state.inlineDiffFailed = false;
-				ctx.invalidate?.();
-			})
-			.catch(() => {
-				if (state.inlineDiffKey !== key) return;
-				state.inlineDiffFailed = true;
-				state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  inline diff unavailable")}`;
-				ctx.invalidate?.();
-			});
+						});
+			state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${rendered}`;
+			state.inlineDiffFailed = false;
+		} catch {
+			state.inlineDiffFailed = true;
+			state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  inline diff unavailable")}`;
+		}
 	}
 
 	return state.inlineDiffText ?? formatInlineDiffHeader(metadata, theme);

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { languageForPath } from "../src/diff-renderer/language.js";
 import { parseInlineDiff } from "../src/diff-renderer/parse.js";
 import { summarizeDiffCounts } from "../src/diff-renderer/summary.js";
+import { renderInlineDiffMetadata } from "../src/diff-renderer/tui.js";
 import {
 	renderInlineDiff,
 	renderNewFilePreview,
@@ -65,7 +66,7 @@ describe("diff renderer output", () => {
 		});
 		const plain = rendered.replace(/\u001b\[[0-9;]*m/g, "");
 
-		expect(plain.split("\n").length).toBe(2);
+		expect(plain.split("\n").length).toBe(3);
 		expect(plain).toContain("-1 │");
 		expect(plain).toContain("+1 │");
 	});
@@ -83,11 +84,30 @@ describe("diff renderer output", () => {
 		const plain = rendered.replace(/\u001b\[[0-9;]*m/g, "");
 		const lines = plain.split("\n");
 
-		expect(lines.length).toBe(4);
-		expect(lines[1]).toContain("-1 │");
-		expect(lines[1]).toContain("+1 │");
-		expect(lines[3]).toContain("-3 │");
-		expect(lines[3]).toContain("+3 │");
+		expect(lines.length).toBe(5);
+		expect(lines[2]).toContain("-1 │");
+		expect(lines[2]).toContain("+1 │");
+		expect(lines[4]).toContain("-3 │");
+		expect(lines[4]).toContain("+3 │");
+	});
+
+	it("renders metadata diff synchronously without loading placeholder", () => {
+		const rendered = renderInlineDiffMetadata(
+			{
+				kind: "diff",
+				path: "src/tool.ts",
+				summary: "+1 -1",
+				language: "typescript",
+				oldContent: "const value = 1;\n",
+				newContent: "const value = 2;\n",
+			},
+			{ fg: (_token: string, text: string) => text },
+			{},
+			false,
+		);
+
+		expect(rendered).toContain("const value");
+		expect(rendered).not.toContain("rendering diff");
 	});
 
 	it("renders a bounded new-file preview", async () => {
