@@ -37,6 +37,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@shikijs/cli": "^4.0.2",
     "diff": "^8.0.3",
     "tree-sitter": "0.22.4",
     "tree-sitter-clojure": "github:ghoseb/tree-sitter-clojure#78928e6",
