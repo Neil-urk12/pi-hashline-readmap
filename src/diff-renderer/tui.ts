@@ -1,4 +1,5 @@
 import type { InlineDiffMetadata } from "./model.js";
+import { createHash } from "node:crypto";
 import { parseInlineDiff } from "./parse.js";
 import { renderInlineDiff, renderNewFilePreview } from "./render.js";
 
@@ -10,80 +11,117 @@ const EXPANDED_NEW_LINES = 80;
 const MAX_DIFF_INPUT_CHARS = 200_000;
 
 function terminalWidth(): number {
-  return Math.max(40, process.stdout.columns || DEFAULT_WIDTH);
+	return Math.max(40, process.stdout.columns || DEFAULT_WIDTH);
 }
 
 function themeKey(theme: any): string {
-  if (!theme) return "no-theme";
-  try {
-    return JSON.stringify(Object.keys(theme).sort());
-  } catch {
-    return "theme";
-  }
+	if (!theme) return "no-theme";
+	try {
+		return JSON.stringify(Object.keys(theme).sort());
+	} catch {
+		return "theme";
+	}
+}
+
+function hashContent(content: string): string {
+	return createHash("sha256").update(content).digest("hex");
 }
 
 function metadataFingerprint(metadata: InlineDiffMetadata): string {
-  if (metadata.kind === "no-change") return metadata.kind;
-  if (metadata.kind === "new-file") return `${metadata.kind}:${metadata.content.length}:${metadata.content.slice(0, 64)}:${metadata.content.slice(-64)}`;
-  return `${metadata.kind}:${metadata.summary}:${metadata.oldContent.length}:${metadata.newContent.length}:${metadata.oldContent.slice(0, 64)}:${metadata.newContent.slice(0, 64)}:${metadata.oldContent.slice(-64)}:${metadata.newContent.slice(-64)}`;
+	if (metadata.kind === "no-change") return metadata.kind;
+	if (metadata.kind === "new-file")
+		return `${metadata.kind}:${hashContent(metadata.content)}`;
+	return `${metadata.kind}:${metadata.summary}:${hashContent(metadata.oldContent)}:${hashContent(metadata.newContent)}`;
 }
 
-export function formatInlineDiffHeader(metadata: InlineDiffMetadata, theme: any): string {
-  if (metadata.kind === "diff") return `  ${theme.fg("success", metadata.summary)} ${theme.fg("muted", metadata.path)}`;
-  if (metadata.kind === "new-file") return `  ${theme.fg("success", `✓ new file (${metadata.lines} lines)`)} ${theme.fg("muted", metadata.path)}`;
-  return `  ${theme.fg("muted", "✓ no changes")}`;
+export function formatInlineDiffHeader(
+	metadata: InlineDiffMetadata,
+	theme: any,
+): string {
+	if (metadata.kind === "diff")
+		return `  ${theme.fg("success", metadata.summary)} ${theme.fg("muted", metadata.path)}`;
+	if (metadata.kind === "new-file")
+		return `  ${theme.fg("success", `✓ new file (${metadata.lines} lines)`)} ${theme.fg("muted", metadata.path)}`;
+	return `  ${theme.fg("muted", "✓ no changes")}`;
 }
 
-export function renderInlineDiffMetadata(metadata: InlineDiffMetadata, theme: any, ctx: any, expanded: boolean): string {
-  if (metadata.kind === "no-change") return formatInlineDiffHeader(metadata, theme);
+export function renderInlineDiffMetadata(
+	metadata: InlineDiffMetadata,
+	theme: any,
+	ctx: any,
+	expanded: boolean,
+): string {
+	if (metadata.kind === "no-change")
+		return formatInlineDiffHeader(metadata, theme);
 
-  if (metadata.kind === "diff" && metadata.oldContent.length + metadata.newContent.length > MAX_DIFF_INPUT_CHARS) {
-    return `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  diff too large for inline rendering")}`;
-  }
-  if (metadata.kind === "new-file" && metadata.content.length > MAX_DIFF_INPUT_CHARS) {
-    return `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  file too large for inline preview")}`;
-  }
+	if (
+		metadata.kind === "diff" &&
+		metadata.oldContent.length + metadata.newContent.length >
+			MAX_DIFF_INPUT_CHARS
+	) {
+		return `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  diff too large for inline rendering")}`;
+	}
+	if (
+		metadata.kind === "new-file" &&
+		metadata.content.length > MAX_DIFF_INPUT_CHARS
+	) {
+		return `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  file too large for inline preview")}`;
+	}
 
-  const width = terminalWidth();
-  const maxLines = expanded
-    ? metadata.kind === "new-file" ? EXPANDED_NEW_LINES : EXPANDED_DIFF_LINES
-    : metadata.kind === "new-file" ? COLLAPSED_NEW_LINES : COLLAPSED_DIFF_LINES;
-  const key = JSON.stringify({ fingerprint: metadataFingerprint(metadata), path: metadata.path, width, maxLines, theme: themeKey(theme) });
-  const state = ctx.state ?? (ctx.state = {});
+	const width = terminalWidth();
+	const maxLines = expanded
+		? metadata.kind === "new-file"
+			? EXPANDED_NEW_LINES
+			: EXPANDED_DIFF_LINES
+		: metadata.kind === "new-file"
+			? COLLAPSED_NEW_LINES
+			: COLLAPSED_DIFF_LINES;
+	const key = JSON.stringify({
+		fingerprint: metadataFingerprint(metadata),
+		path: metadata.path,
+		width,
+		maxLines,
+		theme: themeKey(theme),
+	});
+	const state = ctx.state ?? (ctx.state = {});
 
-  if (state.inlineDiffKey !== key) {
-    state.inlineDiffKey = key;
-    state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  rendering diff…")}`;
-    state.inlineDiffFailed = false;
+	if (state.inlineDiffKey !== key) {
+		state.inlineDiffKey = key;
+		state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  rendering diff…")}`;
+		state.inlineDiffFailed = false;
 
-    const renderPromise = metadata.kind === "diff"
-      ? renderInlineDiff(parseInlineDiff(metadata.oldContent, metadata.newContent), {
-          language: metadata.language,
-          maxLines,
-          width,
-          theme,
-        })
-      : renderNewFilePreview(metadata.content, {
-          language: metadata.language,
-          maxLines,
-          width,
-          theme,
-        });
+		const renderPromise =
+			metadata.kind === "diff"
+				? renderInlineDiff(
+						parseInlineDiff(metadata.oldContent, metadata.newContent),
+						{
+							language: metadata.language,
+							maxLines,
+							width,
+							theme,
+						},
+					)
+				: renderNewFilePreview(metadata.content, {
+						language: metadata.language,
+						maxLines,
+						width,
+						theme,
+					});
 
-    renderPromise
-      .then((rendered) => {
-        if (state.inlineDiffKey !== key) return;
-        state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${rendered}`;
-        state.inlineDiffFailed = false;
-        ctx.invalidate?.();
-      })
-      .catch(() => {
-        if (state.inlineDiffKey !== key) return;
-        state.inlineDiffFailed = true;
-        state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  inline diff unavailable")}`;
-        ctx.invalidate?.();
-      });
-  }
+		renderPromise
+			.then((rendered) => {
+				if (state.inlineDiffKey !== key) return;
+				state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${rendered}`;
+				state.inlineDiffFailed = false;
+				ctx.invalidate?.();
+			})
+			.catch(() => {
+				if (state.inlineDiffKey !== key) return;
+				state.inlineDiffFailed = true;
+				state.inlineDiffText = `${formatInlineDiffHeader(metadata, theme)}\n${theme.fg("muted", "  inline diff unavailable")}`;
+				ctx.invalidate?.();
+			});
+	}
 
-  return state.inlineDiffText ?? formatInlineDiffHeader(metadata, theme);
+	return state.inlineDiffText ?? formatInlineDiffHeader(metadata, theme);
 }
