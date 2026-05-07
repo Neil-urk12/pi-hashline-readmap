@@ -45,6 +45,13 @@ function lineNumber(value: number | undefined, width: number): string {
 		: String(value).padStart(width, " ");
 }
 
+function fitColumn(value: string, width: number): string {
+	if (width <= 0) return "";
+	const visible = visibleLength(value);
+	if (visible > width) return fit(value, width);
+	return `${value}${" ".repeat(width - visible)}`;
+}
+
 function cacheSet(key: string, value: string[]): string[] {
 	if (highlightCache.has(key)) highlightCache.delete(key);
 	highlightCache.set(key, value);
@@ -211,39 +218,58 @@ async function renderSplit(
 		highlighted[index] ??
 		limited.lines[index]?.content ??
 		"";
+	const joinCols = (left: string, right: string) =>
+		`${fitColumn(left, half)} │ ${fitColumn(right, half)}`;
+	const blankLeft = `${DIM} ${lineNumber(undefined, lineWidth)} │${RESET}`;
+	const blankRight = blankLeft;
+
+	rows.push(
+		joinCols(
+			`${DIM}${"old".padStart(Math.max(3, lineWidth + 2), " ")}${RESET}`,
+			`${DIM}${"new".padStart(Math.max(3, lineWidth + 2), " ")}${RESET}`,
+		),
+	);
 
 	for (let i = 0; i < limited.lines.length; i++) {
 		const line = limited.lines[i]!;
-		const next =
-			i + 1 < limited.lines.length ? limited.lines[i + 1] : undefined;
 
-		if (line.type === "del" && next?.type === "add") {
-			const leftCode = codeTextAt(i);
-			const rightCode = codeTextAt(i + 1);
-			const left = `${BG_DEL}${FG_DEL}-${lineNumber(line.oldNum, lineWidth)} │ ${leftCode}${RESET}`;
-			const right = `${BG_ADD}${FG_ADD}+${lineNumber(next.newNum, lineWidth)} │ ${rightCode}${RESET}`;
-			rows.push(`${fit(left, half)} │ ${fit(right, half)}`);
-			i++;
+		if (line.type === "del") {
+			const delStart = i;
+			while (i < limited.lines.length && limited.lines[i]?.type === "del") i++;
+			const delEnd = i;
+			const addStart = i;
+			while (i < limited.lines.length && limited.lines[i]?.type === "add") i++;
+			const addEnd = i;
+			const rowCount = Math.max(delEnd - delStart, addEnd - addStart);
+
+			for (let row = 0; row < rowCount; row++) {
+				const oldIndex = delStart + row;
+				const newIndex = addStart + row;
+				const oldLine = oldIndex < delEnd ? limited.lines[oldIndex] : undefined;
+				const newLine = newIndex < addEnd ? limited.lines[newIndex] : undefined;
+				const left = oldLine
+					? `${BG_DEL}${FG_DEL}-${lineNumber(oldLine.oldNum, lineWidth)} │ ${codeTextAt(oldIndex)}${RESET}`
+					: blankLeft;
+				const right = newLine
+					? `${BG_ADD}${FG_ADD}+${lineNumber(newLine.newNum, lineWidth)} │ ${codeTextAt(newIndex)}${RESET}`
+					: blankRight;
+				rows.push(joinCols(left, right));
+			}
+
+			i--;
+			continue;
+		}
+
+		if (line.type === "add") {
+			const right = `${BG_ADD}${FG_ADD}+${lineNumber(line.newNum, lineWidth)} │ ${codeTextAt(i)}${RESET}`;
+			rows.push(joinCols(blankLeft, right));
 			continue;
 		}
 
 		const codeText = codeTextAt(i);
-		if (line.type === "del") {
-			const left = `${BG_DEL}${FG_DEL}-${lineNumber(line.oldNum, lineWidth)} │ ${codeText}${RESET}`;
-			const right = `${DIM} ${lineNumber(undefined, lineWidth)} │ ${RESET}`;
-			rows.push(`${fit(left, half)} │ ${fit(right, half)}`);
-			continue;
-		}
-		if (line.type === "add") {
-			const left = `${DIM} ${lineNumber(undefined, lineWidth)} │ ${RESET}`;
-			const right = `${BG_ADD}${FG_ADD}+${lineNumber(line.newNum, lineWidth)} │ ${codeText}${RESET}`;
-			rows.push(`${fit(left, half)} │ ${fit(right, half)}`);
-			continue;
-		}
-
 		const left = `${DIM} ${lineNumber(line.oldNum, lineWidth)} │ ${codeText}${RESET}`;
 		const right = `${DIM} ${lineNumber(line.newNum, lineWidth)} │ ${codeText}${RESET}`;
-		rows.push(`${fit(left, half)} │ ${fit(right, half)}`);
+		rows.push(joinCols(left, right));
 	}
 
 	if (limited.omitted > 0)
