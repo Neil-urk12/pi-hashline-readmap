@@ -56,6 +56,7 @@
     "@mariozechner/pi-tui": "^0.70.5",
     "@sinclair/typebox": "^0.34.48",
     "@types/node": "^25.5.0",
+    "fast-check": "^4.7.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
   },
