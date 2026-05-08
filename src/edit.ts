@@ -3,7 +3,7 @@ import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import { readFileSync } from "fs";
 import { readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
-import { detectLineEnding, generateCompactOrFullDiff, normalizeToLF, replaceText, restoreLineEndings, stripBom } from "./edit-diff";
+import { detectLineEnding, generateCompactOrFullDiff, generateStructuredDiff, normalizeToLF, replaceText, restoreLineEndings, stripBom } from "./edit-diff";
 import { HashlineMismatchError, applyHashlineEdits, computeLineHash, ensureHashInit, parseLineRef, type HashlineEditItem, escapeControlCharsForDisplay } from "./hashline";
 import { resolveToCwd } from "./path-utils";
 import { throwIfAborted } from "./runtime";
@@ -16,6 +16,11 @@ import { formatEditCallText, formatEditResultText } from "./edit-render-helpers.
 import { validateSyntaxRegression } from "./edit-syntax-validate.js";
 import { resolveSyntaxValidateMode, type SyntaxValidateOptions } from "./syntax-validate-mode.js";
 import { replaceSymbol } from "./replace-symbol.js";
+import { renderUnifiedDiff } from "./diff-renderer.js";
+import { loadDiffConfig } from "./diff-config.js";
+import { getTerminalWidth } from "./terminal-width.js";
+import { resolvePresentationMode } from "./diff-presentation.js";
+import type { DiffData } from "./diff-types.js";
 
 export function wrapWriteError(err: any, path: string): Error {
 	const code = err?.code;
@@ -455,7 +460,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					: undefined);
 			}
 
-			const diffResult = generateCompactOrFullDiff(originalNormalized, result);
+			const diffResult = generateStructuredDiff(originalNormalized, result);
 			const warnings: string[] = [];
 			if (anchorResult.warnings?.length) warnings.push(...anchorResult.warnings);
 			if (legacyNormalizationWarning) warnings.push(legacyNormalizationWarning);
@@ -489,6 +494,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				noopEdits: anchorResult.noopEdits ?? [],
 				edits,
 				semanticSummary,
+				diffData: diffResult.diffData,
 			});
 
 			const warn = warnings.length ? `\n\nWarnings:\n${warnings.join("\n")}` : "";
@@ -499,6 +505,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					firstChangedLine: anchorResult.firstChangedLine ?? diffResult.firstChangedLine,
 					ptcValue: builtOutput.ptcValue,
 					contextHygiene: builtOutput.contextHygiene,
+					diffData: diffResult.diffData,
 				} as EditToolDetails & {
 					ptcValue: {
 						tool: string;
@@ -510,6 +517,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 						warnings: string[];
 						noopEdits: unknown[];
 					};
+					diffData: typeof diffResult.diffData;
 				},
 			};
 		},
@@ -537,7 +545,8 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				rest[0] ?? options ?? {};
 			const isPartial = context.isPartial ?? (options as any)?.isPartial ?? false;
 			const isError = context.isError ?? false;
-			const expanded = context.expanded ?? (options as any)?.expanded ?? false;
+			// Default to expanded=true for edit results to show inline diffs
+			const expanded = context.expanded ?? (options as any)?.expanded ?? true;
 
 			if (isPartial) {
 				return new Text(theme.fg("dim", "Editing\u2026"), 0, 0);
@@ -550,9 +559,11 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				.join("\n") ?? "";
 			const details = result.details ?? {};
 			const diff: string = details.diff ?? "";
+			const diffData: DiffData | undefined = details.diffData;
 			const ptcValue = details.ptcValue as {
 				warnings?: string[];
 				noopEdits?: unknown[];
+				path?: string;
 			} | undefined;
 			const warnings = ptcValue?.warnings ?? [];
 			const noopEdits = ptcValue?.noopEdits ?? [];
@@ -598,7 +609,30 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				text = parts.join("  ") || theme.fg("success", "\u2713");
 
 				if (expanded) {
-					if (diff) {
+					if (diff && diffData) {
+						// Use unified renderer with inline highlights
+						const config = loadDiffConfig();
+						const terminalWidth = getTerminalWidth();
+						const mode = resolvePresentationMode(terminalWidth, config);
+						
+						if (mode === "unified") {
+							// Render with inline highlights
+							const filePath = ptcValue?.path;
+							// Create theme adapter for renderUnifiedDiff
+							const diffTheme = {
+								fg: (color: string, text: string) => theme.fg(color, text),
+								bg: (color: string, text: string) => text, // Not used by pi-coding-agent theme
+								bold: (text: string) => theme.bold ? theme.bold(text) : text,
+								getBgAnsi: (color: string) => "\x1b[48;2;0;0;0m", // Default black background
+							};
+							const lines = renderUnifiedDiff(diffData, diffTheme, config, terminalWidth, filePath);
+							text += `\n${lines.join("\n")}`;
+						} else {
+							// Fall back to existing renderDiff for compact/summary modes
+							text += `\n${renderDiff(diff)}`;
+						}
+					} else if (diff) {
+						// Fall back to existing renderDiff if diffData not available
 						text += `\n${renderDiff(diff)}`;
 					}
 					if (warnings.length > 0) {

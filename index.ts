@@ -138,6 +138,23 @@ export type {
   HashlineToolPtcPolicyEntry,
 } from "./src/ptc-tool-policy.js";
 
+// Export diff rendering types
+export type {
+  DiffLineKind,
+  PresentationMode,
+  RgbColor,
+  Token,
+  DiffSpan,
+  DiffLineEntry,
+  DiffMetaEntry,
+  ParsedDiffEntry,
+  DiffStats,
+  ParsedDiff,
+  DiffData,
+  DiffConfig,
+  DiffTheme,
+} from "./src/diff-types.js";
+
 const BASH_FILTER_ENABLED = true;
 
 function formatBytes(bytes: number): string {

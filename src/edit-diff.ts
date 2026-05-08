@@ -1,5 +1,8 @@
 import * as Diff from "diff";
 import { computeLineHash } from "./hashline";
+import { parseDiff } from "./diff-parser.js";
+import { computeInlineHighlights } from "./inline-diff.js";
+import type { DiffData } from "./diff-types.js";
 
 // ─── Line ending normalization ──────────────────────────────────────────
 
@@ -336,4 +339,54 @@ export function generateCompactOrFullDiff(
 
 	// Fall back to the full (existing) diff format.
 	return generateDiffString(oldContent, newContent, contextLines);
+}
+
+/**
+ * Generate structured diff data with inline highlights
+ * 
+ * This function combines the unified diff string generation with parsing
+ * and inline highlight computation to produce a complete DiffData payload.
+ * 
+ * Algorithm:
+ * 1. Call generateDiffString() to get unified diff string (always use full format for parsing)
+ * 2. Call parseDiff() to parse into structured format
+ * 3. Call computeInlineHighlights() to compute token-level spans
+ * 4. Return both unified string and DiffData object
+ * 
+ * Note: We use generateDiffString() instead of generateCompactOrFullDiff() because
+ * the compact format (LINE:HASH|old → LINE:HASH|new) cannot be parsed by parseDiff().
+ * The compact format is only used for the backward-compatible diff string field.
+ * 
+ * @param oldContent - Original file content
+ * @param newContent - Modified file content
+ * @param contextLines - Number of context lines to include (default: 4)
+ * @returns Object with diff string (compact or full), firstChangedLine, and diffData
+ * 
+ * Requirements: 4.1, 4.7
+ */
+export function generateStructuredDiff(
+	oldContent: string,
+	newContent: string,
+	contextLines = 4,
+): { diff: string; firstChangedLine: number | undefined; diffData: DiffData } {
+	// Generate compact or full diff string for backward compatibility
+	const { diff: compactDiff, firstChangedLine: compactFirstLine } = generateCompactOrFullDiff(oldContent, newContent, contextLines);
+	
+	// Generate full unified diff string for parsing (always use full format)
+	const { diff: fullDiff, firstChangedLine: fullFirstLine } = generateDiffString(oldContent, newContent, contextLines);
+	
+	// Parse the full diff into structured format
+	const parsed = parseDiff(fullDiff);
+	
+	// Compute inline highlights for all line pairs
+	const inlineHighlights = computeInlineHighlights(parsed);
+	
+	// Build complete DiffData payload
+	const diffData: DiffData = {
+		parsed,
+		inlineHighlights,
+	};
+	
+	// Return compact diff for backward compatibility, but use full diff's firstChangedLine
+	return { diff: compactDiff, firstChangedLine: compactFirstLine ?? fullFirstLine, diffData };
 }

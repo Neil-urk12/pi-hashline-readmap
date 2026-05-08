@@ -319,9 +319,9 @@ function renderDiffLine(
   // Apply foreground color based on line kind
   let styledContent: string;
   if (lineKind === "add") {
-    styledContent = theme.fg("green", processedContent);
+    styledContent = theme.fg("success", processedContent);
   } else if (lineKind === "remove") {
-    styledContent = theme.fg("red", processedContent);
+    styledContent = theme.fg("error", processedContent);
   } else {
     // Context: dim styling
     styledContent = "\x1b[2m" + processedContent + "\x1b[22m";
@@ -399,8 +399,8 @@ function renderHunkHeader(
 ): string {
   const { raw } = entry;
 
-  // Apply accent color (cyan)
-  let line = theme.fg("cyan", raw);
+  // Apply accent color - use "accent" instead of "cyan" for pi compatibility
+  let line = theme.fg("accent", raw);
 
   // Clamp to terminal width
   line = clampRenderedLineToWidth(line, terminalWidth);
@@ -423,8 +423,8 @@ function renderFileHeader(
 ): string {
   const { raw } = entry;
 
-  // Apply accent color (cyan)
-  let line = theme.fg("cyan", raw);
+  // Apply accent color - use "accent" instead of "cyan" for pi compatibility
+  let line = theme.fg("accent", raw);
 
   // Clamp to terminal width
   line = clampRenderedLineToWidth(line, terminalWidth);
