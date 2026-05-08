@@ -1,20 +1,60 @@
-import { renderDiff, type ExtensionAPI, type EditToolDetails, type ToolRenderResultOptions } from "@mariozechner/pi-coding-agent";
+import {
+	renderDiff,
+	type ExtensionAPI,
+	type EditToolDetails,
+	type ToolRenderResultOptions,
+} from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import { readFileSync } from "fs";
 import { readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
-import { detectLineEnding, generateCompactOrFullDiff, normalizeToLF, replaceText, restoreLineEndings, stripBom } from "./edit-diff";
-import { HashlineMismatchError, applyHashlineEdits, computeLineHash, ensureHashInit, parseLineRef, type HashlineEditItem, escapeControlCharsForDisplay } from "./hashline";
+import {
+	detectLineEnding,
+	generateCompactOrFullDiff,
+	normalizeToLF,
+	replaceText,
+	restoreLineEndings,
+	stripBom,
+} from "./edit-diff";
+import { generateDiffString } from "./edit-diff.js";
+import {
+	HashlineMismatchError,
+	applyHashlineEdits,
+	computeLineHash,
+	ensureHashInit,
+	parseLineRef,
+	type HashlineEditItem,
+	escapeControlCharsForDisplay,
+} from "./hashline";
 import { resolveToCwd } from "./path-utils";
 import { throwIfAborted } from "./runtime";
 import { buildEditOutput } from "./edit-output.js";
-import { classifyEdit, isDifftAvailable, runDifftastic } from "./edit-classify.js";
+import {
+	classifyEdit,
+	isDifftAvailable,
+	runDifftastic,
+} from "./edit-classify.js";
 import type { SemanticSummary } from "./ptc-value.js";
 import { buildPtcError } from "./ptc-value.js";
 import { Text } from "@mariozechner/pi-tui";
-import { formatEditCallText, formatEditResultText } from "./edit-render-helpers.js";
+import {
+	formatEditCallText,
+	formatEditResultText,
+} from "./edit-render-helpers.js";
 import { validateSyntaxRegression } from "./edit-syntax-validate.js";
-import { resolveSyntaxValidateMode, type SyntaxValidateOptions } from "./syntax-validate-mode.js";
+import {
+	resolveSyntaxValidateMode,
+	type SyntaxValidateOptions,
+} from "./syntax-validate-mode.js";
+import { getTerminalWidth } from "./terminal-width.js";
+import {
+	resolveDiffPresentationMode,
+	canRenderSplitLayout,
+} from "./diff-presentation.js";
+import { resolveDiffConfig } from "./diff-config.js";
+import { buildStructuredDiff } from "./diff-output.js";
+import { renderSplit } from "./diff-renderer-core.js";
+import type { DiffData } from "./diff-types.js";
 import { replaceSymbol } from "./replace-symbol.js";
 
 export function wrapWriteError(err: any, path: string): Error {
@@ -32,18 +72,49 @@ export function isBinaryBuffer(buf: Buffer): boolean {
 // ─── Schema ─────────────────────────────────────────────────────────────
 
 const hashlineEditItemSchema = Type.Union([
-	Type.Object({ set_line: Type.Object({ anchor: Type.String(), new_text: Type.String() }) }, { additionalProperties: true }),
 	Type.Object(
-		{ replace_lines: Type.Object({ start_anchor: Type.String(), end_anchor: Type.String(), new_text: Type.String() }) },
-		{ additionalProperties: true },
-	),
-	Type.Object({ insert_after: Type.Object({ anchor: Type.String(), new_text: Type.String(), text: Type.Optional(Type.String()) }) }, { additionalProperties: true }),
-	Type.Object(
-		{ replace: Type.Object({ old_text: Type.String(), new_text: Type.String(), all: Type.Optional(Type.Boolean()) }) },
+		{
+			set_line: Type.Object({ anchor: Type.String(), new_text: Type.String() }),
+		},
 		{ additionalProperties: true },
 	),
 	Type.Object(
-		{ replace_symbol: Type.Object({ symbol: Type.String(), new_body: Type.String() }) },
+		{
+			replace_lines: Type.Object({
+				start_anchor: Type.String(),
+				end_anchor: Type.String(),
+				new_text: Type.String(),
+			}),
+		},
+		{ additionalProperties: true },
+	),
+	Type.Object(
+		{
+			insert_after: Type.Object({
+				anchor: Type.String(),
+				new_text: Type.String(),
+				text: Type.Optional(Type.String()),
+			}),
+		},
+		{ additionalProperties: true },
+	),
+	Type.Object(
+		{
+			replace: Type.Object({
+				old_text: Type.String(),
+				new_text: Type.String(),
+				all: Type.Optional(Type.Boolean()),
+			}),
+		},
+		{ additionalProperties: true },
+	),
+	Type.Object(
+		{
+			replace_symbol: Type.Object({
+				symbol: Type.String(),
+				new_body: Type.String(),
+			}),
+		},
 		{ additionalProperties: true },
 	),
 ]);
@@ -51,14 +122,21 @@ const hashlineEditItemSchema = Type.Union([
 const hashlineEditSchema = Type.Object(
 	{
 		path: Type.String({ description: "File path (relative or absolute)" }),
-		edits: Type.Optional(Type.Array(hashlineEditItemSchema, { description: "Array of edit operations" })),
+		edits: Type.Optional(
+			Type.Array(hashlineEditItemSchema, {
+				description: "Array of edit operations",
+			}),
+		),
 	},
 	{ additionalProperties: true },
 );
 
 type HashlineParams = Static<typeof hashlineEditSchema>;
 
-const EDIT_DESC = readFileSync(new URL("../prompts/edit.md", import.meta.url), "utf-8").trim();
+const EDIT_DESC = readFileSync(
+	new URL("../prompts/edit.md", import.meta.url),
+	"utf-8",
+).trim();
 
 function buildEditError(
 	path: string,
@@ -94,7 +172,10 @@ export interface EditToolOptions {
 
 // ─── Registration ───────────────────────────────────────────────────────
 
-export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}) {
+export function registerEditTool(
+	pi: ExtensionAPI,
+	options: EditToolOptions = {},
+) {
 	const ptc = {
 		callable: true,
 		enabled: true,
@@ -143,7 +224,8 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					: typeof input.new_text === "string"
 						? input.new_text
 						: undefined;
-			const hasLegacyInput = legacyOldText !== undefined || legacyNewText !== undefined;
+			const hasLegacyInput =
+				legacyOldText !== undefined || legacyNewText !== undefined;
 			const hasEditsInput = Array.isArray(parsed.edits);
 
 			let edits = parsed.edits ?? [];
@@ -168,7 +250,11 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			}
 
 			if (!edits.length) {
-				return buildEditError(absolutePath, "invalid-edit-variant", "No edits provided.");
+				return buildEditError(
+					absolutePath,
+					"invalid-edit-variant",
+					"No edits provided.",
+				);
 			}
 
 			// Validate edit variant keys
@@ -196,17 +282,27 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			}
 
 			const anchorEdits = edits.filter(
-				(e): e is HashlineEditItem => "set_line" in e || "replace_lines" in e || "insert_after" in e,
+				(e): e is HashlineEditItem =>
+					"set_line" in e || "replace_lines" in e || "insert_after" in e,
 			);
 			const replaceEdits = edits.filter(
-				(e): e is { replace: { old_text: string; new_text: string; all?: boolean } } => "replace" in e,
+				(
+					e,
+				): e is {
+					replace: { old_text: string; new_text: string; all?: boolean };
+				} => "replace" in e,
 			);
 			const replaceSymbolEdits = edits.filter(
-				(e): e is { replace_symbol: { symbol: string; new_body: string } } => "replace_symbol" in e,
+				(e): e is { replace_symbol: { symbol: string; new_body: string } } =>
+					"replace_symbol" in e,
 			);
 			for (const rs of replaceSymbolEdits) {
 				if (!rs.replace_symbol.new_body.trim()) {
-					return buildEditError(absolutePath, "invalid-edit-variant", "replace_symbol.new_body must not be empty or whitespace-only.");
+					return buildEditError(
+						absolutePath,
+						"invalid-edit-variant",
+						"replace_symbol.new_body must not be empty or whitespace-only.",
+					);
 				}
 			}
 
@@ -234,7 +330,13 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					message = `File not readable: ${path}${err?.message ? ` — ${err.message}` : ""}`;
 					errorDetails = { fsCode: code, fsMessage: err?.message };
 				}
-				return buildEditError(absolutePath, errCode, message, hint, errorDetails);
+				return buildEditError(
+					absolutePath,
+					errCode,
+					message,
+					hint,
+					errorDetails,
+				);
 			}
 			if (isBinaryBuffer(rawBuffer)) {
 				const message = `Cannot edit binary file: ${path}`;
@@ -258,7 +360,13 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			// AC 4: store successful probe results and reuse them in the apply loop so
 			// generateMapFromContent is invoked at most once per replace_symbol edit.
 			const replaceSymbolRanges: { start: number; end: number }[] = [];
-			const rsProbeResults: { type: "ok"; content: string; replacement: string; warnings: string[]; range: { start: number; end: number } }[] = [];
+			const rsProbeResults: {
+				type: "ok";
+				content: string;
+				replacement: string;
+				warnings: string[];
+				range: { start: number; end: number };
+			}[] = [];
 			for (const rs of replaceSymbolEdits) {
 				const probe = await replaceSymbol({
 					filePath: absolutePath,
@@ -268,13 +376,19 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				});
 				if (probe.type !== "ok") {
 					// F2: symbol-resolution errors surface before AC 26 overlap check.
-					return buildEditError(absolutePath, "invalid-edit-variant", probe.message);
+					return buildEditError(
+						absolutePath,
+						"invalid-edit-variant",
+						probe.message,
+					);
 				}
 				rsProbeResults.push(probe);
 				replaceSymbolRanges.push(probe.range);
 			}
 
-			const sortedReplaceSymbolRanges = [...replaceSymbolRanges].sort((a, b) => a.start - b.start || a.end - b.end);
+			const sortedReplaceSymbolRanges = [...replaceSymbolRanges].sort(
+				(a, b) => a.start - b.start || a.end - b.end,
+			);
 			for (let i = 1; i < sortedReplaceSymbolRanges.length; i++) {
 				const prev = sortedReplaceSymbolRanges[i - 1];
 				const current = sortedReplaceSymbolRanges[i];
@@ -289,8 +403,12 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 						let startLine: number | undefined;
 						let endLine: number | undefined;
 						try {
-							startLine = parseLineRef((edit as any).replace_lines.start_anchor).line;
-							endLine = parseLineRef((edit as any).replace_lines.end_anchor).line;
+							startLine = parseLineRef(
+								(edit as any).replace_lines.start_anchor,
+							).line;
+							endLine = parseLineRef(
+								(edit as any).replace_lines.end_anchor,
+							).line;
 						} catch {
 							// Let the normal anchored edit validation report malformed anchors later.
 						}
@@ -300,7 +418,11 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 							for (const range of replaceSymbolRanges) {
 								if (lo <= range.end && hi >= range.start) {
 									const message = `replace_lines range ${lo}-${hi} overlaps a replace_symbol range (lines ${range.start}-${range.end}).`;
-						return buildEditError(absolutePath, "invalid-edit-variant", message);
+									return buildEditError(
+										absolutePath,
+										"invalid-edit-variant",
+										message,
+									);
 								}
 							}
 						}
@@ -308,8 +430,12 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					const refs: string[] = [];
 					if ("set_line" in edit) refs.push((edit as any).set_line.anchor);
 					else if ("replace_lines" in edit) {
-						refs.push((edit as any).replace_lines.start_anchor, (edit as any).replace_lines.end_anchor);
-					} else if ("insert_after" in edit) refs.push((edit as any).insert_after.anchor);
+						refs.push(
+							(edit as any).replace_lines.start_anchor,
+							(edit as any).replace_lines.end_anchor,
+						);
+					} else if ("insert_after" in edit)
+						refs.push((edit as any).insert_after.anchor);
 					for (const ref of refs) {
 						let parsedLine: number | undefined;
 						try {
@@ -320,7 +446,11 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 						for (const range of replaceSymbolRanges) {
 							if (parsedLine >= range.start && parsedLine <= range.end) {
 								const message = `Anchor at line ${parsedLine} falls inside a replace_symbol range (lines ${range.start}-${range.end}).`;
-						return buildEditError(absolutePath, "invalid-edit-variant", message);
+								return buildEditError(
+									absolutePath,
+									"invalid-edit-variant",
+									message,
+								);
 							}
 						}
 					}
@@ -336,7 +466,9 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				for (const probe of rsProbeResults) {
 					replaceSymbolWarnings.push(...probe.warnings);
 				}
-				for (const probe of [...rsProbeResults].sort((a, b) => b.range.start - a.range.start)) {
+				for (const probe of [...rsProbeResults].sort(
+					(a, b) => b.range.start - a.range.start,
+				)) {
 					lines.splice(
 						probe.range.start - 1,
 						probe.range.end - probe.range.start + 1,
@@ -352,9 +484,15 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				anchorResult = applyHashlineEdits(result, anchorEdits, signal);
 			} catch (err) {
 				if (err instanceof HashlineMismatchError) {
-					return buildEditError(absolutePath, "hash-mismatch", err.message, undefined, {
-						updatedAnchors: err.updatedAnchors,
-					});
+					return buildEditError(
+						absolutePath,
+						"hash-mismatch",
+						err.message,
+						undefined,
+						{
+							updatedAnchors: err.updatedAnchors,
+						},
+					);
 				}
 				throw err;
 			}
@@ -366,7 +504,12 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					const message = "replace.old_text must not be empty.";
 					return buildEditError(absolutePath, "invalid-edit-variant", message);
 				}
-				const rep = replaceText(result, r.replace.old_text, r.replace.new_text, { all: r.replace.all ?? false });
+				const rep = replaceText(
+					result,
+					r.replace.old_text,
+					r.replace.new_text,
+					{ all: r.replace.all ?? false },
+				);
 				if (!rep.count) {
 					const message = `Could not find text to replace in ${path}.`;
 					return buildEditError(absolutePath, "text-not-found", message);
@@ -394,15 +537,21 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 						const refs: string[] = [];
 						if ("set_line" in edit) refs.push((edit as any).set_line.anchor);
 						else if ("replace_lines" in edit) {
-							refs.push((edit as any).replace_lines.start_anchor, (edit as any).replace_lines.end_anchor);
-						} else if ("insert_after" in edit) refs.push((edit as any).insert_after.anchor);
+							refs.push(
+								(edit as any).replace_lines.start_anchor,
+								(edit as any).replace_lines.end_anchor,
+							);
+						} else if ("insert_after" in edit)
+							refs.push((edit as any).insert_after.anchor);
 						for (const ref of refs) {
 							try {
 								const parsed = parseLineRef(ref);
 								if (parsed.line >= 1 && parsed.line <= lines.length) {
 									const lineContent = lines[parsed.line - 1];
 									const hash = computeLineHash(parsed.line, lineContent);
-									targetLines.push(`${parsed.line}:${hash}|${escapeControlCharsForDisplay(lineContent)}`);
+									targetLines.push(
+										`${parsed.line}:${hash}|${escapeControlCharsForDisplay(lineContent)}`,
+									);
 								}
 							} catch {
 								/* skip malformed refs */
@@ -420,7 +569,9 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			throwIfAborted(signal);
 
 			// Syntax-regression validator (warn/block/off)
-			const syntaxMode = resolveSyntaxValidateMode({ syntaxValidate: options.syntaxValidate });
+			const syntaxMode = resolveSyntaxValidateMode({
+				syntaxValidate: options.syntaxValidate,
+			});
 			let syntaxWarning: string | undefined;
 			if (syntaxMode !== "off") {
 				const regression = await validateSyntaxRegression({
@@ -439,7 +590,11 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				}
 			}
 			try {
-				await fsWriteFile(absolutePath, bom + restoreLineEndings(result, originalEnding), "utf-8");
+				await fsWriteFile(
+					absolutePath,
+					bom + restoreLineEndings(result, originalEnding),
+					"utf-8",
+				);
 			} catch (err: any) {
 				const wrapped = wrapWriteError(err, path);
 				const code =
@@ -449,15 +604,24 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 							? "file-not-found"
 							: "fs-error";
 				const message =
-					code === "fs-error" && err?.message ? `${wrapped.message} — ${err.message}` : wrapped.message;
-				return buildEditError(absolutePath, code, message, undefined, code === "fs-error"
-					? { fsCode: err?.code, fsMessage: err?.message }
-					: undefined);
+					code === "fs-error" && err?.message
+						? `${wrapped.message} — ${err.message}`
+						: wrapped.message;
+				return buildEditError(
+					absolutePath,
+					code,
+					message,
+					undefined,
+					code === "fs-error"
+						? { fsCode: err?.code, fsMessage: err?.message }
+						: undefined,
+				);
 			}
 
 			const diffResult = generateCompactOrFullDiff(originalNormalized, result);
 			const warnings: string[] = [];
-			if (anchorResult.warnings?.length) warnings.push(...anchorResult.warnings);
+			if (anchorResult.warnings?.length)
+				warnings.push(...anchorResult.warnings);
 			if (legacyNormalizationWarning) warnings.push(legacyNormalizationWarning);
 			if (replaceSymbolWarnings.length) warnings.push(...replaceSymbolWarnings);
 			if (syntaxWarning) warnings.push(syntaxWarning);
@@ -471,34 +635,80 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 
 			if (difftAvailable) {
 				const ext = path.split(".").pop() ?? "txt";
-				const difftResult = await runDifftastic(originalNormalized, result, ext);
+				const difftResult = await runDifftastic(
+					originalNormalized,
+					result,
+					ext,
+				);
 				if (difftResult) {
 					semanticSummary = {
 						classification: difftResult.classification,
 						difftasticAvailable: true,
-						...(difftResult.movedBlocks > 0 ? { movedBlocks: difftResult.movedBlocks } : {}),
+						...(difftResult.movedBlocks > 0
+							? { movedBlocks: difftResult.movedBlocks }
+							: {}),
 					};
 				}
+			}
+			// Diff presentation mode selection (split vs unified)
+			const diffConfig = resolveDiffConfig();
+			const terminalWidth = getTerminalWidth();
+			const canRenderSplit = canRenderSplitLayout(terminalWidth, diffConfig);
+			const presentationMode = resolveDiffPresentationMode(
+				diffConfig,
+				terminalWidth,
+				canRenderSplit,
+			);
+
+			let diffData: DiffData;
+			let diffForDetails: string;
+
+			if (presentationMode === "split" && canRenderSplit) {
+				const unifiedDiff = generateDiffString(
+					originalNormalized,
+					result,
+					4,
+				).diff;
+				diffForDetails = unifiedDiff;
+				diffData = buildStructuredDiff(
+					originalNormalized,
+					result,
+					"split",
+					diffConfig,
+					terminalWidth,
+					unifiedDiff,
+				);
+			} else {
+				const diffResult = generateCompactOrFullDiff(
+					originalNormalized,
+					result,
+				);
+				diffForDetails = diffResult.diff;
+				diffData = { mode: "unified", diff: diffForDetails };
 			}
 			const builtOutput = buildEditOutput({
 				path: absolutePath,
 				displayPath: path,
-				diff: diffResult.diff,
-				firstChangedLine: anchorResult.firstChangedLine ?? diffResult.firstChangedLine,
+				diff: diffForDetails,
+				firstChangedLine: anchorResult.firstChangedLine,
 				warnings,
 				noopEdits: anchorResult.noopEdits ?? [],
 				edits,
 				semanticSummary,
+				diffData,
 			});
 
-			const warn = warnings.length ? `\n\nWarnings:\n${warnings.join("\n")}` : "";
+			const warn = warnings.length
+				? `\n\nWarnings:\n${warnings.join("\n")}`
+				: "";
 			return {
 				content: [{ type: "text", text: builtOutput.text }],
 				details: {
-					diff: diffResult.diff,
-					firstChangedLine: anchorResult.firstChangedLine ?? diffResult.firstChangedLine,
+					diff: diffForDetails,
+					firstChangedLine: anchorResult.firstChangedLine,
 					ptcValue: builtOutput.ptcValue,
 					contextHygiene: builtOutput.contextHygiene,
+					diffData: builtOutput.diffData,
 				} as EditToolDetails & {
 					ptcValue: {
 						tool: string;
@@ -514,7 +724,8 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			};
 		},
 		renderCall(args: any, theme: any, ...rest: any[]) {
-			const context: { argsComplete?: boolean; lastComponent?: any } = rest[0] ?? {};
+			const context: { argsComplete?: boolean; lastComponent?: any } =
+				rest[0] ?? {};
 			const argsComplete = context.argsComplete ?? false;
 			const { path: filePath, suffix } = formatEditCallText(args, argsComplete);
 
@@ -532,10 +743,20 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			component.setText(text);
 			return component;
 		},
-		renderResult(result: any, options: ToolRenderResultOptions, theme: any, ...rest: any[]) {
-			const context: { isPartial?: boolean; isError?: boolean; expanded?: boolean; lastComponent?: any } =
-				rest[0] ?? options ?? {};
-			const isPartial = context.isPartial ?? (options as any)?.isPartial ?? false;
+		renderResult(
+			result: any,
+			options: ToolRenderResultOptions,
+			theme: any,
+			...rest: any[]
+		) {
+			const context: {
+				isPartial?: boolean;
+				isError?: boolean;
+				expanded?: boolean;
+				lastComponent?: any;
+			} = rest[0] ?? options ?? {};
+			const isPartial =
+				context.isPartial ?? (options as any)?.isPartial ?? false;
 			const isError = context.isError ?? false;
 			const expanded = context.expanded ?? (options as any)?.expanded ?? false;
 
@@ -544,19 +765,24 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			}
 
 			// Extract data from result
-			const textContent = result.content
-				?.filter((c: any) => c.type === "text")
-				.map((c: any) => c.text || "")
-				.join("\n") ?? "";
+			const textContent =
+				result.content
+					?.filter((c: any) => c.type === "text")
+					.map((c: any) => c.text || "")
+					.join("\n") ?? "";
 			const details = result.details ?? {};
 			const diff: string = details.diff ?? "";
-			const ptcValue = details.ptcValue as {
-				warnings?: string[];
-				noopEdits?: unknown[];
-			} | undefined;
+			const diffData = details.diffData as DiffData | undefined;
+			const ptcValue = details.ptcValue as
+				| {
+						warnings?: string[];
+						noopEdits?: unknown[];
+				  }
+				| undefined;
 			const warnings = ptcValue?.warnings ?? [];
 			const noopEdits = ptcValue?.noopEdits ?? [];
-			const semanticClassification = (ptcValue as any)?.semanticSummary?.classification as string | undefined;
+			const semanticClassification = (ptcValue as any)?.semanticSummary
+				?.classification as string | undefined;
 
 			const info = formatEditResultText({
 				isError: isError || !!result.isError,
@@ -597,8 +823,19 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				}
 				text = parts.join("  ") || theme.fg("success", "\u2713");
 
-				if (expanded) {
-					if (diff) {
+				const shouldRenderSplit = diffData?.mode === "split";
+				if (shouldRenderSplit || expanded) {
+					if (diffData?.mode === "split") {
+						const diffConfig = resolveDiffConfig();
+						const terminalWidth = getTerminalWidth();
+						const renderedRows = renderSplit(
+							diffData.splitRows,
+							diffConfig,
+							theme,
+							{ terminalWidth },
+						);
+						text += "\n" + renderedRows.map((r) => r.text).join("\n");
+					} else if (diff) {
 						text += `\n${renderDiff(diff)}`;
 					}
 					if (warnings.length > 0) {
