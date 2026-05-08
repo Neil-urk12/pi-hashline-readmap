@@ -26,10 +26,15 @@ import type { DiffData, DiffConfig, DiffTheme, RgbColor, DiffLineEntry } from ".
 
 /**
  * Simple theme for testing
+ * Maps pi's theme color names to ANSI codes
  */
 const testTheme: DiffTheme = {
   fg: (color: string, text: string) => {
     const colorMap: Record<string, string> = {
+      success: "\x1b[32m",  // green for added lines
+      error: "\x1b[31m",    // red for removed lines
+      accent: "\x1b[36m",   // cyan for hunk headers
+      // Legacy color names (for backward compatibility)
       green: "\x1b[32m",
       red: "\x1b[31m",
       cyan: "\x1b[36m",
