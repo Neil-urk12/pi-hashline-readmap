@@ -67,14 +67,6 @@ function reapplyBg(value: string, bg: string): string {
 	);
 }
 
-function fitColumn(value: string, width: number, padBg = ""): string {
-	if (width <= 0) return "";
-	const fitted = visibleLength(value) > width ? fit(value, width) : value;
-	const pad = Math.max(0, width - visibleLength(fitted));
-	if (!padBg) return `${fitted}${" ".repeat(pad)}`;
-	const stable = keepBackgroundAcrossResets(fitted, padBg);
-	return `${padBg}${stable}${" ".repeat(pad)}${RESET}`;
-}
 
 function cacheSet(key: string, value: string[]): string[] {
 	if (highlightCache.has(key)) highlightCache.delete(key);
@@ -268,7 +260,7 @@ function renderSplit(
 	const cell = (
 		line: InlineDiffLine | undefined,
 		side: "old" | "new",
-		index: number,
+		index: number | undefined,
 		width: number,
 	): string => {
 		if (!line) return " ".repeat(width);
@@ -283,7 +275,7 @@ function renderSplit(
 		const fg = isAdd ? FG_ADD : isDel ? FG_DEL : FG_DIM;
 		const bg = isAdd ? BG_ADD : isDel ? BG_DEL : "";
 		const contentWidth = Math.max(1, width - 2);
-		const body = `${gutter(num, sign)}${codeTextAt(index)}`;
+		const body = `${gutter(num, sign)}${codeTextAt(index!)}`;
 		const fitted = fit(`${fg}${body}${RESET}`, contentWidth);
 		return bg
 			? `${bg} ${reapplyBg(padVisible(fitted, contentWidth), bg)} ${RESET}`
@@ -301,27 +293,37 @@ function renderSplit(
 			continue;
 		}
 
-		if (line.type === "del") {
-			const delStart = i;
-			while (i < limited.lines.length && limited.lines[i]?.type === "del") i++;
-			const delEnd = i;
-			const addStart = i;
+	if (line.type === "del") {
+		const delStart = i;
+		while (i < limited.lines.length && limited.lines[i]?.type === "del") i++;
+		const delEnd = i;
+
+		// Only treat the following lines as additions if they are actually "add".
+		// Otherwise the next line (usually a context line) would be consumed here
+		// and rendered again in the main loop below, causing a duplicate row.
+		let addCount = 0;
+		let addStart = delEnd;
+		if (limited.lines[delEnd]?.type === "add") {
+			addStart = i;
 			while (i < limited.lines.length && limited.lines[i]?.type === "add") i++;
-			const addEnd = i;
-			const rowCount = Math.max(delEnd - delStart, addEnd - addStart);
-
-			for (let row = 0; row < rowCount; row++) {
-				const oldIndex = delStart + row;
-				const newIndex = addStart + row;
-				pushPair(
-					cell(limited.lines[oldIndex], "old", oldIndex, half),
-					cell(limited.lines[newIndex], "new", newIndex, rightHalf),
-				);
-			}
-
-			i--;
-			continue;
 		}
+		const addEnd = i;
+		addCount = addEnd - addStart;
+
+		const rowCount = Math.max(delEnd - delStart, addCount);
+
+		for (let row = 0; row < rowCount; row++) {
+			const oldIndex = delStart + row;
+			const newIdx = addCount > 0 ? addStart + row : undefined;
+			pushPair(
+				cell(limited.lines[oldIndex], "old", oldIndex, half),
+				cell(newIdx !== undefined ? limited.lines[newIdx] : undefined, "new", newIdx, rightHalf),
+			);
+		}
+
+		i--;
+		continue;
+	}
 
 		if (line.type === "add") {
 			pushPair(" ".repeat(half), cell(line, "new", i, rightHalf));
