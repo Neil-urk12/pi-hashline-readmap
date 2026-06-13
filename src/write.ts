@@ -14,6 +14,10 @@ import { defineToolPromptMetadata } from "./tool-prompt-metadata.js";
 import { buildPendingWritePreviewData, buildWritePreviewKey, resolvePendingDiffPreview, type PendingDiffPreviewResult } from "./pending-diff-preview.js";
 import { generateCompactOrFullDiff, normalizeToLF, hasBareCarriageReturn } from "./edit-diff.js";
 import { buildDiffData, type DiffData } from "./diff-data.js";
+import type { InlineDiffMetadata } from "./diff-renderer/model.js";
+import { languageForPath } from "./diff-renderer/language.js";
+import { parseInlineDiff } from "./diff-renderer/parse.js";
+import { summarizeDiffCounts } from "./diff-renderer/summary.js";
 import { clampLineToWidth, clampLinesToWidth, isRendererExpanded, linkToolPath, renderToolLabel, summaryLine } from "./tui-render-utils.js";
 import { DiffPreviewComponent } from "./tui-diff-component.js";
 
@@ -63,6 +67,7 @@ function pendingWritePreviewParts(summary: string, preview: PendingDiffPreviewRe
 
 const MAX_LINES = 2000;
 const MAX_BYTES = 50 * 1024;
+const MAX_INLINE_DIFF_CONTENT_CHARS = 200_000;
 const WRITE_PROMPT_METADATA = defineToolPromptMetadata({
   promptUrl: new URL("../prompts/write.md", import.meta.url),
   promptSnippet: "Create or overwrite a complete file and return edit anchors",
@@ -82,6 +87,7 @@ export interface WriteResult extends WriteDiffFields {
   text: string;
   warnings: string[];
   writeState?: "created" | "overwritten";
+  inlineDiff?: InlineDiffMetadata;
   ptcValue: {
     tool: "write";
     path: string;
@@ -294,12 +300,48 @@ export async function executeWrite(opts: {
     diff: diffResult.diff,
   });
 
+  // Build inline diff metadata for the new diff-renderer.
+  // Skipped when contents are too large to render synchronously.
+  const language = languageForPath(filePath);
+  let inlineDiff: InlineDiffMetadata | undefined;
+  if (existedBeforeWrite) {
+    if (previousContent === content) {
+      inlineDiff = { kind: "no-change", path: filePath };
+    } else if (previousContent.length + content.length <= MAX_INLINE_DIFF_CONTENT_CHARS) {
+      const parsed = parseInlineDiff(previousContent, content);
+      inlineDiff = {
+        kind: "diff",
+        path: filePath,
+        summary: summarizeDiffCounts(parsed.added, parsed.removed),
+        language,
+        oldContent: previousContent,
+        newContent: content,
+      };
+    }
+  } else if (content.length <= MAX_INLINE_DIFF_CONTENT_CHARS) {
+    // Count display lines: drop the trailing blank produced by a terminal
+    // newline so the count matches what the user typed.
+    const rawLines = content.split("\n");
+    const displayLineCount =
+      rawLines.length > 0 && rawLines[rawLines.length - 1] === ""
+        ? rawLines.length - 1
+        : rawLines.length;
+    inlineDiff = {
+      kind: "new-file",
+      path: filePath,
+      language,
+      content,
+      lines: displayLineCount,
+    };
+  }
+
   return {
     text,
     warnings,
     writeState: existedBeforeWrite ? "overwritten" : "created",
     diff: diffResult.diff,
     diffData,
+    ...(inlineDiff ? { inlineDiff } : {}),
     ptcValue: {
       tool: "write",
       path: displayPath,
@@ -418,6 +460,7 @@ export function registerWriteTool(pi: ExtensionAPI, options: WriteToolOptions = 
           ...(result.diff !== undefined ? { diff: result.diff } : {}),
           ...(result.diffData !== undefined ? { diffData: result.diffData } : {}),
           ...(result.writeState ? { writeState: result.writeState } : {}),
+          ...(result.inlineDiff ? { inlineDiff: result.inlineDiff } : {}),
           ptcValue: result.ptcValue,
           warnings: result.warnings,
           contextHygiene: result.contextHygiene,

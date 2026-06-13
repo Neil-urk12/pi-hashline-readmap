@@ -23,8 +23,13 @@ import { clampLineToWidth, clampLinesToWidth, isRendererExpanded, linkToolPath, 
 import { DiffPreviewComponent } from "./tui-diff-component.js";
 import { buildContextHygieneMetadata, buildFileResource, type ContextHygieneMetadata } from "./context-hygiene.js";
 import { resolveEditDiffDisplay } from "./hashline-settings.js";
+import type { InlineDiffMetadata } from "./diff-renderer/model.js";
+import { languageForPath } from "./diff-renderer/language.js";
+import { parseInlineDiff } from "./diff-renderer/parse.js";
+import { summarizeDiffCounts } from "./diff-renderer/summary.js";
 
 const EDIT_PENDING_PREVIEW_STATE_KEY = "hashline-edit-pending-preview";
+const MAX_INLINE_DIFF_CONTENT_CHARS = 200_000;
 
 function pendingPreviewLines(summary: string, preview: PendingDiffPreviewResult | undefined, expanded: boolean): { lines: string[]; diffData?: ReturnType<typeof buildDiffData>; headerLabel?: string } {
 	if (!preview || preview.type !== "ok") return { lines: summary.split("\n") };
@@ -592,6 +597,21 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				semanticSummary,
 			});
 
+			// Build inline diff metadata for the new diff-renderer. Skipped when
+			// contents are too large to render synchronously so the response stays snappy.
+			let inlineDiff: InlineDiffMetadata | undefined;
+			if (originalNormalized.length + result.length <= MAX_INLINE_DIFF_CONTENT_CHARS) {
+				const parsedInlineDiff = parseInlineDiff(originalNormalized, result);
+				inlineDiff = {
+					kind: "diff",
+					path: absolutePath,
+					summary: summarizeDiffCounts(parsedInlineDiff.added, parsedInlineDiff.removed),
+					language: languageForPath(path),
+					oldContent: originalNormalized,
+					newContent: result,
+				};
+			}
+
 			const warn = warnings.length ? `\n\nWarnings:\n${warnings.join("\n")}` : "";
 			return {
 				content: [{ type: "text", text: builtOutput.text }],
@@ -602,6 +622,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					firstChangedLine: anchorResult.firstChangedLine ?? diffResult.firstChangedLine,
 					ptcValue: builtOutput.ptcValue,
 					contextHygiene: builtOutput.contextHygiene,
+					...(inlineDiff ? { inlineDiff } : {}),
 				} as EditToolDetails & {
 					diffData: typeof diffData;
 					ptcValue: {
