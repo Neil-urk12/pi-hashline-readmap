@@ -1,6 +1,10 @@
 import type { PtcLine, PtcWarning } from "./ptc-value.js";
 import { type ContextHygieneRehydrateDescriptor, type ContextHygieneMetadata } from "./context-hygiene.js";
-import { buildToolOutput, type ToolOutputBudget } from "./tool-output.js";
+import {
+	buildToolOutput,
+	type ToolOutputFileRef,
+	type ToolOutputSymbolRef,
+} from "./tool-output.js";
 import { resolveGrepOutputBudget } from "./grep-budget.js";
 
 export interface GrepOutputRecord extends PtcLine {
@@ -141,10 +145,7 @@ export function buildGrepOutput(input: BuildGrepOutputInput): GrepOutputResult {
     body = `${input.scopeWarnings!.map((warning) => warning.message).join("\n\n")}\n\n${body}`;
   }
 
-  const budget: ToolOutputBudget = (() => {
-    const b = resolveGrepOutputBudget();
-    return { maxLines: b.maxLines, maxBytes: b.maxBytes };
-  })();
+  const budget = resolveGrepOutputBudget();
 
   const ptcValue: GrepOutputResult["ptcValue"] = {
     tool: "grep",
@@ -166,8 +167,8 @@ export function buildGrepOutput(input: BuildGrepOutputInput): GrepOutputResult {
     classification: "search-context",
     text: body,
     ptcValue,
-    files: input.records.map((record) => ({ path: record.path })),
-    symbols: input.groups.flatMap((group) =>
+    files: input.records.map<ToolOutputFileRef>((record) => ({ path: record.path })),
+    symbols: input.groups.flatMap<ToolOutputSymbolRef>((group) =>
       group.scope
         ? [{ path: group.absolutePath, name: group.scope.symbol.name, kind: group.scope.symbol.kind }]
         : [],

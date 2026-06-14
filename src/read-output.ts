@@ -10,7 +10,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { buildPtcLines, renderPtcLines, type PtcLine, type PtcWarning } from "./ptc-value.js";
 import { type ContextHygieneMetadata, type ContextHygieneRehydrateDescriptor } from "./context-hygiene.js";
-import { buildToolOutput, type ToolOutputBudget } from "./tool-output.js";
+import {
+	buildToolOutput,
+	type ToolOutputBudget,
+	type ToolOutputFileRef,
+	type ToolOutputSymbolRef,
+} from "./tool-output.js";
 
 export interface ReadSymbolMetadata {
   query: string;
@@ -113,7 +118,7 @@ export function buildReadOutput(input: ReadOutputInput): ReadOutputResult {
       }
     : undefined;
 
-  const symbolRefs: { path: string; name: string; kind?: string }[] = [];
+  const symbolRefs: ToolOutputSymbolRef[] = [];
   if (input.symbol) {
     symbolRefs.push({ path: input.path, name: input.symbol.name, kind: input.symbol.kind });
   }
@@ -164,7 +169,7 @@ export function buildReadOutput(input: ReadOutputInput): ReadOutputResult {
     classification: "read-context",
     text: renderedLines,
     ptcValue,
-    files: [{ path: input.path }],
+    files: [{ path: input.path }] satisfies readonly ToolOutputFileRef[],
     symbols: symbolRefs,
     rehydrate: input.rehydrate,
     budget,

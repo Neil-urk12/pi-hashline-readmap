@@ -6,7 +6,8 @@
  * pass the pre-rendered body plus a typed ptcValue envelope. This module
  * owns:
  *   - the truncation header format (was duplicated in 2 places)
- *   - the resource-collection pass (was duplicated in 5 places)
+ *   - the resource-collection pass (was duplicated in 5 places — 2
+ *     migrated in this PR, the remaining shims will follow in a follow-up)
  *   - the context-hygiene metadata construction (was per-shim)
  */
 import { formatSize, truncateHead } from "@earendil-works/pi-coding-agent";

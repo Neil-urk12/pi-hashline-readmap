@@ -1,5 +1,6 @@
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { resolveHashlineJsonSettings } from "./hashline-settings.js";
+import type { ToolOutputBudget } from "./tool-output.js";
 
 const POSITIVE_BASE10_INT = /^[1-9][0-9]*$/;
 
@@ -24,10 +25,12 @@ export function parsePositiveBase10Int(raw: string | undefined | null): number |
 	return parsed;
 }
 
-export interface GrepOutputBudget {
-	maxLines: number;
-	maxBytes: number;
-}
+/**
+ * Grep-output budget type. Aliased to the shared `ToolOutputBudget` so
+ * grep shims and the deep module can pass values through without a
+ * field-by-field copy.
+ */
+export type GrepOutputBudget = ToolOutputBudget;
 
 /**
  * Effective grep-output ceilings used as clamp upper bounds and as the
