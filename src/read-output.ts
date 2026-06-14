@@ -1,18 +1,16 @@
+/**
+ * Read tool output shim — assembles the truncatable body, hands off to
+ * `buildToolOutput` for truncation + envelope + metadata, then wraps the
+ * result with the read-specific trailers (continuation, bundle, map) and
+ * prepends (symbol, warnings).
+ */
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
-  formatSize,
-  truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import { buildPtcLines, renderPtcLines, type PtcLine, type PtcWarning } from "./ptc-value.js";
-import {
-  buildContextHygieneMetadata,
-  buildFileResource,
-  buildSymbolResource,
-  type ContextHygieneMetadata,
-  type ContextHygieneRehydrateDescriptor,
-  type ContextHygieneResource,
-} from "./context-hygiene.js";
+import { type ContextHygieneMetadata, type ContextHygieneRehydrateDescriptor } from "./context-hygiene.js";
+import { buildToolOutput, type ToolOutputBudget } from "./tool-output.js";
 
 export interface ReadSymbolMetadata {
   query: string;
@@ -73,18 +71,11 @@ export interface ReadOutputResult {
   ptcValue: {
     tool: "read";
     path: string;
-    range: {
-      startLine: number;
-      endLine: number;
-      totalLines: number;
-    };
+    range: { startLine: number; endLine: number; totalLines: number };
     warnings: PtcWarning[];
     truncation: ReadTruncationMetadata | null;
     symbol: ReadSymbolMetadata | null;
-    map: {
-      requested: boolean;
-      appended: boolean;
-    };
+    map: { requested: boolean; appended: boolean };
     lines: PtcLine[];
     bundle?: {
       mode: "local";
@@ -107,55 +98,38 @@ export function buildReadOutput(input: ReadOutputInput): ReadOutputResult {
   const lines = buildPtcLines(input.startLine, input.selectedLines);
   const warnings = input.warnings ?? [];
   const renderedLines = renderPtcLines(lines);
-  const truncated = truncateHead(renderedLines, {
-    maxLines: DEFAULT_MAX_LINES,
-    maxBytes: DEFAULT_MAX_BYTES,
-  });
 
-  let text = input.truncation ? truncated.content : renderedLines;
+  // The deep module truncates the bare renderedLines and (if truncation
+  // happened) appends the standard header with the read-specific advice.
+  // Trailers (continuation, bundle, map) and prepends (symbol, warnings)
+  // wrap the result below.
+  const budget: ToolOutputBudget | undefined = input.truncation
+    ? { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES }
+    : undefined;
+  const truncationHeader = input.truncation
+    ? {
+        totalLines: input.totalLines,
+        advice: `Use offset=${input.startLine + input.truncation.outputLines} to continue.`,
+      }
+    : undefined;
 
-  if (input.truncation) {
-    text += `\n\n[Output truncated: showing ${input.truncation.outputLines} of ${input.totalLines} lines (${formatSize(input.truncation.outputBytes)} of ${formatSize(input.truncation.totalBytes)}). Use offset=${input.startLine + input.truncation.outputLines} to continue.]`;
-  } else if (input.continuation) {
-    text += `\n\n[Showing lines ${input.startLine}-${input.endLine} of ${input.totalLines}. Use offset=${input.continuation.nextOffset} to continue.]`;
-  }
-
-  if (input.bundle?.applied) {
-    const supportBlocks = input.bundle.localSupport.map((item) => {
-      const supportLines = buildPtcLines(item.symbol.startLine, item.lines);
-      return renderPtcLines(supportLines);
-    });
-
-    text = [
-      "## Requested symbol",
-      text,
-      "",
-      "## Local support",
-      ...supportBlocks,
-    ].join("\n");
-  }
-
-  if (input.map?.appended && input.map.text) {
-    text += `\n\n${input.map.text}`;
-  }
-
+  const symbolRefs: { path: string; name: string; kind?: string }[] = [];
   if (input.symbol) {
-    const parentInfo = input.symbol.parentName ? ` in ${input.symbol.parentName}` : "";
-    text = `[Symbol: ${input.symbol.name} (${input.symbol.kind})${parentInfo}, lines ${input.symbol.startLine}-${input.symbol.endLine} of ${input.totalLines}]\n\n${text}`;
+    symbolRefs.push({ path: input.path, name: input.symbol.name, kind: input.symbol.kind });
+  }
+  if (input.bundle?.applied) {
+    for (const support of input.bundle.localSupport) {
+      symbolRefs.push({ path: input.path, name: support.symbol.name, kind: support.symbol.kind });
+    }
   }
 
-  if (warnings.length) {
-    text = `${warnings.map((warning) => warning.message).join("\n\n")}\n\n${text}`;
-  }
-
+  // ptcValue is built before the deep module call so the shim can pass the
+  // real envelope through and use the deep module's identity passthrough
+  // (matching the grep shim's pattern).
   const ptcValue: ReadOutputResult["ptcValue"] = {
     tool: "read",
     path: input.path,
-    range: {
-      startLine: input.startLine,
-      endLine: input.endLine,
-      totalLines: input.totalLines,
-    },
+    range: { startLine: input.startLine, endLine: input.endLine, totalLines: input.totalLines },
     warnings,
     truncation: input.truncation ?? null,
     symbol: input.symbol ?? null,
@@ -185,26 +159,43 @@ export function buildReadOutput(input: ReadOutputInput): ReadOutputResult {
     };
   }
 
-  const contextHygieneResources: ContextHygieneResource[] = [buildFileResource(input.path)];
-  if (input.symbol) {
-    contextHygieneResources.push(buildSymbolResource(input.path, input.symbol.name, input.symbol.kind));
-  }
-  if (input.bundle?.applied) {
-    for (const support of input.bundle.localSupport) {
-      contextHygieneResources.push(buildSymbolResource(input.path, support.symbol.name, support.symbol.kind));
-    }
-  }
-  const contextHygiene = buildContextHygieneMetadata({
+  const { text: truncated, contextHygiene } = buildToolOutput({
     tool: "read",
     classification: "read-context",
-    resources: contextHygieneResources,
-    rehydrate: input.rehydrate ?? undefined,
+    text: renderedLines,
+    ptcValue,
+    files: [{ path: input.path }],
+    symbols: symbolRefs,
+    rehydrate: input.rehydrate,
+    budget,
+    truncationHeader,
   });
 
-  return {
-    text,
-    lines,
-    ptcValue,
-    contextHygiene,
-  };
+  let text = truncated;
+  if (!input.truncation && input.continuation) {
+    text += `\n\n[Showing lines ${input.startLine}-${input.endLine} of ${input.totalLines}. Use offset=${input.continuation.nextOffset} to continue.]`;
+  }
+
+  if (input.bundle?.applied) {
+    const supportBlocks = input.bundle.localSupport.map((item) => {
+      const supportLines = buildPtcLines(item.symbol.startLine, item.lines);
+      return renderPtcLines(supportLines);
+    });
+    text = ["## Requested symbol", text, "", "## Local support", ...supportBlocks].join("\n");
+  }
+
+  if (input.map?.appended && input.map.text) {
+    text += `\n\n${input.map.text}`;
+  }
+
+  if (input.symbol) {
+    const parentInfo = input.symbol.parentName ? ` in ${input.symbol.parentName}` : "";
+    text = `[Symbol: ${input.symbol.name} (${input.symbol.kind})${parentInfo}, lines ${input.symbol.startLine}-${input.symbol.endLine} of ${input.totalLines}]\n\n${text}`;
+  }
+
+  if (warnings.length) {
+    text = `${warnings.map((w) => w.message).join("\n\n")}\n\n${text}`;
+  }
+
+  return { text, lines, ptcValue, contextHygiene };
 }

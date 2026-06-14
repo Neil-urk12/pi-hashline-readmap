@@ -1,17 +1,7 @@
 import type { PtcLine, PtcWarning } from "./ptc-value.js";
-import {
-  formatSize,
-  truncateHead,
-} from "@earendil-works/pi-coding-agent";
+import { type ContextHygieneRehydrateDescriptor, type ContextHygieneMetadata } from "./context-hygiene.js";
+import { buildToolOutput, type ToolOutputBudget } from "./tool-output.js";
 import { resolveGrepOutputBudget } from "./grep-budget.js";
-import {
-  buildContextHygieneMetadata,
-  buildFileResource,
-  buildSymbolResource,
-  type ContextHygieneMetadata,
-  type ContextHygieneRehydrateDescriptor,
-  type ContextHygieneResource,
-} from "./context-hygiene.js";
 
 export interface GrepOutputRecord extends PtcLine {
   path: string;
@@ -100,7 +90,6 @@ function renderGroupHeader(group: GrepOutputGroup): string {
   if (!group.scope) {
     return `--- ${group.displayPath} (${group.matchCount} matches) ---`;
   }
-
   const parent = group.scope.symbol.parentName ? ` in ${group.scope.symbol.parentName}` : "";
   const suffix = group.scope.contextLines !== undefined ? `, scoped to ±${group.scope.contextLines} lines` : "";
   return `--- ${group.displayPath} :: ${group.scope.symbol.kind} ${group.scope.symbol.name}${parent} (${group.scope.symbol.startLine}-${group.scope.symbol.endLine}, ${group.matchCount} matches${suffix}) ---`;
@@ -126,12 +115,12 @@ function buildScopeMetadata(groups: GrepOutputGroup[], warnings: GrepScopeWarnin
 export function buildGrepOutput(input: BuildGrepOutputInput): GrepOutputResult {
   const fileCount = new Set(input.groups.map((group) => group.absolutePath)).size;
   const header = `[${input.totalMatches} matches in ${fileCount} files]`;
-  let text: string;
+  let body: string;
   if (input.summary) {
     const fileLines = [...input.groups]
       .sort((a, b) => b.matchCount - a.matchCount)
       .map((group) => `${group.absolutePath}: ${group.matchCount} matches`);
-    text = [header, ...fileLines].join("\n");
+    body = [header, ...fileLines].join("\n");
   } else {
     const blocks: string[] = [header];
     for (const group of input.groups) {
@@ -140,25 +129,23 @@ export function buildGrepOutput(input: BuildGrepOutputInput): GrepOutputResult {
         blocks.push(renderEntry(group.displayPath, entry));
       }
     }
-    text = blocks.join("\n");
+    body = blocks.join("\n");
   }
   if ((input.passthroughLines?.length ?? 0) > 0) {
-    text += `\n\n${input.passthroughLines!.join("\n")}`;
+    body += `\n\n${input.passthroughLines!.join("\n")}`;
   }
   if (input.limit !== undefined && input.totalMatches === input.limit) {
-    text += `\n\n[Results truncated at ${input.limit} matches — refine pattern or increase limit]`;
+    body += `\n\n[Results truncated at ${input.limit} matches — refine pattern or increase limit]`;
   }
   if (!input.summary && input.scopeMode === "symbol" && (input.scopeWarnings?.length ?? 0) > 0) {
-    text = `${input.scopeWarnings!.map((warning) => warning.message).join("\n\n")}\n\n${text}`;
+    body = `${input.scopeWarnings!.map((warning) => warning.message).join("\n\n")}\n\n${body}`;
   }
-  const budget = resolveGrepOutputBudget();
-  const truncated = truncateHead(text, {
-    maxLines: budget.maxLines,
-    maxBytes: budget.maxBytes,
-  });
-  if (truncated.truncated) {
-    text = `${truncated.content}\n\n[Output truncated: showing ${truncated.outputLines} of ${truncated.totalLines} lines (${formatSize(truncated.outputBytes)} of ${formatSize(truncated.totalBytes)}). Refine pattern or increase limit.]`;
-  }
+
+  const budget: ToolOutputBudget = (() => {
+    const b = resolveGrepOutputBudget();
+    return { maxLines: b.maxLines, maxBytes: b.maxBytes };
+  })();
+
   const ptcValue: GrepOutputResult["ptcValue"] = {
     tool: "grep",
     summary: input.summary,
@@ -174,24 +161,21 @@ export function buildGrepOutput(input: BuildGrepOutputInput): GrepOutputResult {
     ptcValue.scopes = buildScopeMetadata(input.groups, input.scopeWarnings ?? []);
   }
 
-  const contextHygieneResources: ContextHygieneResource[] = [];
-  for (const record of input.records) {
-    contextHygieneResources.push(buildFileResource(record.path));
-  }
-  for (const group of input.groups) {
-    if (!group.scope) continue;
-    contextHygieneResources.push(buildFileResource(group.absolutePath));
-    contextHygieneResources.push(buildSymbolResource(group.absolutePath, group.scope.symbol.name, group.scope.symbol.kind));
-  }
-  const contextHygiene = buildContextHygieneMetadata({
+  const { text, contextHygiene } = buildToolOutput({
     tool: "grep",
     classification: "search-context",
-    resources: contextHygieneResources,
-    rehydrate: input.rehydrate ?? undefined,
-  });
-  return {
-    text,
+    text: body,
     ptcValue,
-    contextHygiene,
-  };
+    files: input.records.map((record) => ({ path: record.path })),
+    symbols: input.groups.flatMap((group) =>
+      group.scope
+        ? [{ path: group.absolutePath, name: group.scope.symbol.name, kind: group.scope.symbol.kind }]
+        : [],
+    ),
+    rehydrate: input.rehydrate,
+    budget,
+    truncationHeader: { advice: "Refine pattern or increase limit." },
+  });
+
+  return { text, ptcValue, contextHygiene };
 }
