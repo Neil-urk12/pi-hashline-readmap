@@ -12,6 +12,7 @@ import { filterBashOutput } from "./src/rtk/bash-filter.js";
 import { buildRtkCompaction } from "./src/rtk/rtk-compaction.js";
 import { ensureBashOriginalOutputSnapshot, selectBashOriginalOutput } from "./src/rtk/bash-original-output.js";
 import { applyBashContextGuard, resolveBashContextGuardConfig, type BashContextGuardConfig } from "./src/rtk/bash-context-guard.js";
+import { processBashToolResult } from "./src/rtk/bash-result-pipeline.js";
 import { applyContextHygieneStaleContext } from "./src/context-application.js";
 import { buildBashCommandState } from "./src/bash-command-state.js";
 import {
@@ -290,107 +291,59 @@ export default function piHashlineReadmapExtension(pi: ExtensionAPI): void {
         isError: event.isError,
       };
     }
-    const originalText = Array.isArray(event.content)
-      ? (event.content as Array<{ type?: unknown; text?: unknown }>)
-          .filter((c): c is { type: "text"; text: string } => c.type === "text" && typeof c.text === "string")
-          .map((c) => c.text)
-          .join("\n")
-      : "";
-
-    const nonTextContent = Array.isArray(event.content)
-      ? (event.content as Array<{ type?: unknown; text?: unknown }>).filter(
-          (c) => !(c.type === "text" && typeof c.text === "string"),
-        )
-      : [];
-
     const existingDetails =
       event.details && typeof event.details === "object" ? (event.details as Record<string, unknown>) : {};
-    const bashContextGuardConfig = resolveBashContextGuardConfig();
-    const originalSelection = selectBashOriginalOutput({
-      visibleText: originalText,
-      fullOutputPath: existingDetails.fullOutputPath,
-      enabled: bashContextGuardConfig.enabled,
-    });
-
     const command =
       event.input && typeof event.input === "object" && typeof (event.input as { command?: unknown }).command === "string"
         ? (event.input as { command: string }).command
         : "";
-    const commandState = command
-      ? buildBashCommandState({
-          command,
-          cwd: process.cwd(),
-          isError: event.isError === true,
-          text: originalSelection.inputForRtk || originalText,
-        })
+
+    const prependedText = doomLoop
+      ? `${formatDoomLoopMessage(doomLoop)}\n\n---\n`
       : undefined;
-    const contextHygieneResources: ContextHygieneResource[] = command ? [buildCommandResource(command)] : [];
-    for (const fileTarget of commandState?.fileTargets ?? []) {
-      contextHygieneResources.push(buildFileResource(fileTarget));
-    }
-    const contextHygiene = buildContextHygieneMetadata({
-      tool: "bash",
-      classification: commandState?.stateKind === "shell-file-mutation" ? "mutation" : "command-output",
-      resources: contextHygieneResources,
-      commandState,
+
+    const tracker = getContextHygieneTracker();
+    const pipelineResult = processBashToolResult(event as Parameters<typeof processBashToolResult>[0], {
+      cwd: process.cwd(),
+      env: process.env,
+      contextGuardConfig: resolveBashContextGuardConfig(),
+      tracker,
+      onShellMutation: () => {
+        if (event.isError === true) return;
+        // The deep module only calls onShellMutation when the command was
+        // classified as a shell-file mutation with file targets; we still
+        // re-derive the report at expire-time so a same-turn mutation can
+        // immediately invalidate the current turn's reads.
+        expireStaleReadTurns(tracker.generateReport());
+      },
+      prependedText,
     });
-    const recordedContextHygieneEvent = recordContextHygiene(contextHygiene, event.toolCallId);
-    if (
-      event.isError !== true &&
-      commandState?.stateKind === "shell-file-mutation" &&
-      (commandState.fileTargets?.length ?? 0) > 0
-    ) {
-      expireStaleReadTurns(getContextHygieneTracker().generateReport());
+
+    if (process.env.PI_RTK_SAVINGS === "1" && pipelineResult.savedChars > 0) {
+      process.stderr.write(`[RTK] Saved ${pipelineResult.savedChars} chars (${command})\n`);
     }
-    const appliedEffects = summarizeBashAppliedEffects(recordedContextHygieneEvent.id);
+
+    const appliedEffects = summarizeBashAppliedEffects(pipelineResult.recordedEventId);
     const contextHygieneForDetails: ContextHygieneMetadata = hasAppliedEffects(appliedEffects)
-      ? { ...contextHygiene, appliedEffects }
-      : contextHygiene;
-    const applyWarning = (body: string): string => {
-      if (!doomLoop) return body;
-      const prefix = `${formatDoomLoopMessage(doomLoop)}\n\n---\n`;
-      return `${prefix}${body}`;
-    };
-    const { output, savedChars, info } = filterBashOutput(command, originalSelection.inputForRtk);
-    if (process.env.PI_RTK_SAVINGS === "1") {
-      process.stderr.write(`[RTK] Saved ${savedChars} chars (${command})\n`);
-    }
-    const notice = buildRtkNotice(info, command, output === "");
-    const body = notice ? `${notice}\n${output}` : output;
-    const finalText = applyWarning(body);
-    const originalMetadataForGuard = willBashContextGuardTrim(finalText, bashContextGuardConfig)
-      ? ensureBashOriginalOutputSnapshot({
-          visibleText: originalText,
-          metadata: originalSelection.metadata,
-          enabled: bashContextGuardConfig.enabled,
-        })
-      : originalSelection.metadata;
-    const guarded = applyBashContextGuard({
-      text: finalText,
-      command,
-      originalMetadata: originalMetadataForGuard,
-      config: bashContextGuardConfig,
-    });
-    const bashOriginalOutput = guarded.metadata.trimmed ? originalMetadataForGuard : originalSelection.metadata;
-    const rtkCompaction = buildRtkCompaction({
-      rawInput: originalSelection.inputForRtk,
-      output,
-      info,
-    });
+      ? { ...pipelineResult.details.contextHygiene, appliedEffects }
+      : pipelineResult.details.contextHygiene;
+
     const existingPtcValue =
       existingDetails.ptcValue && typeof existingDetails.ptcValue === "object"
         ? (existingDetails.ptcValue as Record<string, unknown>)
         : {};
     return {
-      content: [{ type: "text" as const, text: guarded.text }, ...nonTextContent],
+      content: pipelineResult.content,
       details: {
         ...existingDetails,
-        compressionInfo: info,
+        compressionInfo: pipelineResult.details.compressionInfo,
         contextHygiene: contextHygieneForDetails,
-        bashContextGuard: guarded.metadata,
-        ...(bashOriginalOutput ? { bashOriginalOutput } : {}),
-        rtkCompaction,
-        ptcValue: { ...existingPtcValue, rtkCompaction },
+        bashContextGuard: pipelineResult.details.bashContextGuard,
+        ...(pipelineResult.details.bashOriginalOutput
+          ? { bashOriginalOutput: pipelineResult.details.bashOriginalOutput }
+          : {}),
+        rtkCompaction: pipelineResult.details.rtkCompaction,
+        ptcValue: { ...existingPtcValue, rtkCompaction: pipelineResult.details.rtkCompaction },
       },
     };
   });
