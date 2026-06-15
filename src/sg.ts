@@ -7,7 +7,7 @@ import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import { defineToolPromptMetadata } from "./tool-prompt-metadata.js";
 import { normalizeToLF, stripBom } from "./edit-diff.js";
 import { ensureHashInit } from "./hashline.js";
-import { buildPtcError, buildPtcLine } from "./ptc-value.js";
+import { buildPtcLine, buildToolError } from "./ptc-value.js";
 import { resolveToCwd } from "./path-utils.js";
 import type { FileSymbol } from "./readmap/types.js";
 import { buildSgOutput } from "./sg-output.js";
@@ -183,48 +183,15 @@ export function registerSgTool(pi: ExtensionAPI, options: SgToolOptions = {}) {
         await fsStat(searchPath);
       } catch (err: any) {
         if (err?.code === "ENOENT") {
-          const message = `Error: path '${p.path ?? "."}' does not exist`;
-          return {
-            content: [{ type: "text", text: message }],
-            isError: true,
-            details: {
-              ptcValue: {
-                tool: "ast_search",
-                ok: false,
-                path: p.path ?? searchPath,
-                error: buildPtcError("path-not-found", message),
-              },
-            },
-          };
+          return buildToolError("ast_search", "path-not-found", `Error: path '${p.path ?? "."}' does not exist`, { path: p.path ?? searchPath });
         }
         if (err?.code === "EACCES" || err?.code === "EPERM") {
-          const message = `Error: permission denied for path '${p.path ?? "."}'`;
-          return {
-            content: [{ type: "text", text: message }],
-            isError: true,
-            details: {
-              ptcValue: {
-                tool: "ast_search",
-                ok: false,
-                path: p.path ?? searchPath,
-                error: buildPtcError("permission-denied", message),
-              },
-            },
-          };
+          return buildToolError("ast_search", "permission-denied", `Error: permission denied for path '${p.path ?? "."}'`, { path: p.path ?? searchPath });
         }
-        const message = `Error: could not access path '${p.path ?? "."}': ${err?.message ?? String(err)}`;
-        return {
-          content: [{ type: "text", text: message }],
-          isError: true,
-          details: {
-            ptcValue: {
-              tool: "ast_search",
-              ok: false,
-              path: p.path ?? searchPath,
-              error: buildPtcError("fs-error", message, undefined, { fsCode: err?.code, fsMessage: err?.message }),
-            },
-          },
-        };
+        return buildToolError("ast_search", "fs-error", `Error: could not access path '${p.path ?? "."}': ${err?.message ?? String(err)}`, {
+          path: p.path ?? searchPath,
+          details: { fsCode: err?.code, fsMessage: err?.message },
+        });
       }
 
       // Auto-promote `lang: "typescript"` → "tsx" when the user pointed at a
@@ -363,35 +330,14 @@ export function registerSgTool(pi: ExtensionAPI, options: SgToolOptions = {}) {
         };
       } catch (err: any) {
         if (err?.code === "ENOENT") {
-          const message = "ast-grep (sg) could not be resolved or executed. pi-hashline-readmap includes @ast-grep/cli for normal npm installs; run npm install, or install ast-grep on PATH as a fallback (for example: brew install ast-grep).";
-          return {
-            content: [{ type: "text", text: message }],
-            isError: true,
-            details: {
-              ptcValue: {
-                tool: "ast_search",
-                ok: false,
-                error: buildPtcError(
-                  "sg-not-installed",
-                  message,
-                  "Run npm install to install @ast-grep/cli, or install ast-grep on PATH as a fallback: brew install ast-grep.",
-                ),
-              },
-            },
-          };
+          return buildToolError(
+            "ast_search",
+            "sg-not-installed",
+            "ast-grep (sg) could not be resolved or executed. pi-hashline-readmap includes @ast-grep/cli for normal npm installs; run npm install, or install ast-grep on PATH as a fallback (for example: brew install ast-grep).",
+            { hint: "Run npm install to install @ast-grep/cli, or install ast-grep on PATH as a fallback: brew install ast-grep." },
+          );
         }
-        const message = String(err?.stderr || err?.message || err);
-        return {
-          content: [{ type: "text", text: message }],
-          isError: true,
-          details: {
-            ptcValue: {
-              tool: "ast_search",
-              ok: false,
-              error: buildPtcError("sg-execution-error", message),
-            },
-          },
-        };
+        return buildToolError("ast_search", "sg-execution-error", String(err?.stderr || err?.message || err));
       }
     },
     renderCall(args: any, theme: any, ...rest: any[]) {

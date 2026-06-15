@@ -11,7 +11,7 @@ import { throwIfAborted } from "./runtime.js";
 import { buildEditOutput } from "./edit-output.js";
 import { classifyEdit, isDifftAvailable, runDifftastic } from "./edit-classify.js";
 import type { SemanticSummary } from "./ptc-value.js";
-import { buildPtcError } from "./ptc-value.js";
+import { buildToolError } from "./ptc-value.js";
 import { Text } from "@earendil-works/pi-tui";
 import { countEditTypes, formatEditCallText, formatEditResultText } from "./edit-render-helpers.js";
 import { validateSyntaxRegression } from "./edit-syntax-validate.js";
@@ -99,36 +99,6 @@ const EDIT_PROMPT_METADATA = defineToolPromptMetadata({
 	],
 });
 
-function buildEditError(
-	path: string,
-	code: string,
-	message: string,
-	hint?: string,
-	errorDetails?: Record<string, unknown>,
-	contextHygiene?: ContextHygieneMetadata,
-): {
-	content: [{ type: "text"; text: string }];
-	isError: true;
-	details: EditToolDetails & { ptcValue: any; contextHygiene?: ContextHygieneMetadata };
-} {
-	return {
-		content: [{ type: "text", text: message }],
-		isError: true,
-		details: {
-			diff: "",
-			patch: "",
-			firstChangedLine: undefined,
-			ptcValue: {
-				tool: "edit",
-				ok: false,
-				path,
-				error: buildPtcError(code, message, hint, errorDetails),
-			},
-			...(contextHygiene ? { contextHygiene } : {}),
-		} as EditToolDetails & { ptcValue: any; contextHygiene?: ContextHygieneMetadata },
-	};
-}
-
 export interface EditToolOptions {
 	wasReadInSession?: (absolutePath: string) => boolean;
 	syntaxValidate?: SyntaxValidateOptions["syntaxValidate"];
@@ -171,12 +141,10 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					`Call read(${JSON.stringify(rawPath)}) first, or use grep, ast_search, or write to produce fresh anchors for this file.`,
 					"edit requires fresh LINE:HASH anchors from read, grep, ast_search, or write so the hashes match the current file contents.",
 				].join(" ");
-				return buildEditError(
-					absolutePath,
-					"file-not-read",
-					message,
-					`Call read(${JSON.stringify(rawPath)}) first, or use grep, ast_search, or write to produce fresh anchors for this file.`,
-				);
+				return buildToolError("edit", "file-not-read", message, {
+					path: absolutePath,
+					hint: `Call read(${JSON.stringify(rawPath)}) first, or use grep, ast_search, or write to produce fresh anchors for this file.`,
+				});
 			}
 			const legacyOldText =
 				typeof input.oldText === "string"
@@ -199,7 +167,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				if (legacyOldText === undefined || legacyNewText === undefined) {
 					const message =
 						"Legacy edit input requires both oldText/newText (or old_text/new_text) when 'edits' is omitted.";
-					return buildEditError(absolutePath, "invalid-edit-variant", message);
+					return buildToolError("edit", "invalid-edit-variant", message, { path: absolutePath });
 				}
 				edits = [
 					{
@@ -215,7 +183,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			}
 
 			if (!edits.length) {
-				return buildEditError(absolutePath, "invalid-edit-variant", "No edits provided.");
+				return buildToolError("edit", "invalid-edit-variant", "No edits provided.", { path: absolutePath });
 			}
 
 			// Validate edit variant keys
@@ -224,11 +192,11 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				const e = edits[i] as Record<string, unknown>;
 				if (("old_text" in e || "new_text" in e) && !("replace" in e)) {
 					const message = `edits[${i}] has top-level 'old_text'/'new_text'. Use {replace: {old_text, new_text}} or {set_line}, {replace_lines}, {insert_after}.`;
-					return buildEditError(absolutePath, "invalid-edit-variant", message);
+					return buildToolError("edit", "invalid-edit-variant", message, { path: absolutePath });
 				}
 				if ("diff" in e) {
 					const message = `edits[${i}] contains 'diff' from patch mode. Hashline edit expects one of: {set_line}, {replace_lines}, {insert_after}, {replace}.`;
-					return buildEditError(absolutePath, "invalid-edit-variant", message);
+					return buildToolError("edit", "invalid-edit-variant", message, { path: absolutePath });
 				}
 				const variantCount =
 					Number("set_line" in e) +
@@ -238,7 +206,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					Number("replace_symbol" in e);
 				if (variantCount !== 1) {
 					const message = `edits[${i}] must contain exactly one of: 'set_line', 'replace_lines', 'insert_after', 'replace', 'replace_symbol'. Got: [${Object.keys(e).join(", ")}].`;
-					return buildEditError(absolutePath, "invalid-edit-variant", message);
+					return buildToolError("edit", "invalid-edit-variant", message, { path: absolutePath });
 				}
 			}
 
@@ -253,7 +221,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			);
 			for (const rs of replaceSymbolEdits) {
 				if (!rs.replace_symbol.new_body.trim()) {
-					return buildEditError(absolutePath, "invalid-edit-variant", "replace_symbol.new_body must not be empty or whitespace-only.");
+					return buildToolError("edit", "invalid-edit-variant", "replace_symbol.new_body must not be empty or whitespace-only.", { path: absolutePath });
 				}
 			}
 
@@ -281,11 +249,15 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					message = `File not readable: ${path}${err?.message ? ` — ${err.message}` : ""}`;
 					errorDetails = { fsCode: code, fsMessage: err?.message };
 				}
-				return buildEditError(absolutePath, errCode, message, hint, errorDetails);
+				return buildToolError("edit", errCode, message, {
+					path: absolutePath,
+					hint,
+					details: errorDetails,
+				});
 			}
 			if (isBinaryBuffer(rawBuffer)) {
 				const message = `Cannot edit binary file: ${path}`;
-				return buildEditError(absolutePath, "binary-file", message);
+				return buildToolError("edit", "binary-file", message, { path: absolutePath });
 			}
 			throwIfAborted(signal);
 			const raw = rawBuffer.toString("utf-8");
@@ -315,7 +287,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				});
 				if (probe.type !== "ok") {
 					// F2: symbol-resolution errors surface before AC 26 overlap check.
-					return buildEditError(absolutePath, "invalid-edit-variant", probe.message);
+					return buildToolError("edit", "invalid-edit-variant", probe.message, { path: absolutePath });
 				}
 				rsProbeResults.push(probe);
 				replaceSymbolRanges.push(probe.range);
@@ -327,7 +299,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				const current = sortedReplaceSymbolRanges[i];
 				if (current.start <= prev.end) {
 					const message = `replace_symbol ranges overlap or duplicate (lines ${prev.start}-${prev.end} and ${current.start}-${current.end}).`;
-					return buildEditError(absolutePath, "invalid-edit-variant", message);
+					return buildToolError("edit", "invalid-edit-variant", message, { path: absolutePath });
 				}
 			}
 			if (replaceSymbolRanges.length > 0) {
@@ -347,7 +319,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 							for (const range of replaceSymbolRanges) {
 								if (lo <= range.end && hi >= range.start) {
 									const message = `replace_lines range ${lo}-${hi} overlaps a replace_symbol range (lines ${range.start}-${range.end}).`;
-						return buildEditError(absolutePath, "invalid-edit-variant", message);
+						return buildToolError("edit", "invalid-edit-variant", message, { path: absolutePath });
 								}
 							}
 						}
@@ -367,7 +339,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 						for (const range of replaceSymbolRanges) {
 							if (parsedLine >= range.start && parsedLine <= range.end) {
 								const message = `Anchor at line ${parsedLine} falls inside a replace_symbol range (lines ${range.start}-${range.end}).`;
-						return buildEditError(absolutePath, "invalid-edit-variant", message);
+						return buildToolError("edit", "invalid-edit-variant", message, { path: absolutePath });
 							}
 						}
 					}
@@ -399,8 +371,9 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				anchorResult = applyHashlineEdits(result, anchorEdits, signal);
 			} catch (err) {
 				if (err instanceof HashlineMismatchError) {
-					return buildEditError(absolutePath, "hash-mismatch", err.message, undefined, {
-						updatedAnchors: err.updatedAnchors,
+					return buildToolError("edit", "hash-mismatch", err.message, {
+						path: absolutePath,
+						details: { updatedAnchors: err.updatedAnchors },
 					});
 				}
 				throw err;
@@ -412,7 +385,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				throwIfAborted(signal);
 				if (!r.replace.old_text.length) {
 					const message = "replace.old_text must not be empty.";
-					return buildEditError(absolutePath, "invalid-edit-variant", message);
+					return buildToolError("edit", "invalid-edit-variant", message, { path: absolutePath });
 				}
 				const rep = replaceText(result, r.replace.old_text, r.replace.new_text, {
 					all: r.replace.all ?? false,
@@ -423,7 +396,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					const hint =
 						"Re-read the file and prefer set_line/replace_lines/insert_after for hash-verified edits. " +
 						"The replace variant is exact-only by default because fuzzy fallback is unverified.";
-					return buildEditError(absolutePath, "text-not-found", message, hint);
+					return buildToolError("edit", "text-not-found", message, { path: absolutePath, hint });
 				}
 				if (rep.usedFuzzyMatch) {
 					replaceWarnings.push(
@@ -473,7 +446,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 						diagnostic += `\nThe file currently contains:\n${preview}\nYour edits were normalized back to the original content. Ensure your replacement changes actual code, not just formatting.`;
 					}
 				}
-				return buildEditError(absolutePath, "no-op", diagnostic);
+				return buildToolError("edit", "no-op", diagnostic, { path: absolutePath });
 			}
 
 			throwIfAborted(signal);
@@ -492,7 +465,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					const message = `syntax-regression: lines ${lines}`;
 					// Task 7 (AC 12): block mode aborts with syntax-regression code; file is left untouched.
 					if (syntaxMode === "block") {
-						return buildEditError(absolutePath, "syntax-regression", message);
+						return buildToolError("edit", "syntax-regression", message, { path: absolutePath });
 					}
 					syntaxWarning = message;
 				}
@@ -510,9 +483,10 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 							: "fs-error";
 				const message =
 					code === "fs-error" && err?.message ? `${wrapped.message} — ${err.message}` : wrapped.message;
-				return buildEditError(absolutePath, code, message, undefined, code === "fs-error"
-					? { fsCode: err?.code, fsMessage: err?.message }
-					: undefined);
+				return buildToolError("edit", code, message, {
+					path: absolutePath,
+					details: code === "fs-error" ? { fsCode: err?.code, fsMessage: err?.message } : undefined,
+				});
 			}
 
 			if (input.postEditVerify === true) {
@@ -527,21 +501,19 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 					verifiedContent = verified;
 				} catch (err: any) {
 					const message = `Edit write completed but post-edit verification failed: could not read ${path} after writing.`;
-					return buildEditError(absolutePath, "post-edit-verification-read-failed", message, undefined, {
-							fsCode: err?.code,
-							fsMessage: err?.message,
-						},
-						postWriteMutationContextHygiene,
-					);
+					return buildToolError("edit", "post-edit-verification-read-failed", message, {
+						path: absolutePath,
+						details: { fsCode: err?.code, fsMessage: err?.message },
+						contextHygiene: postWriteMutationContextHygiene,
+					});
 				}
 				if (verifiedContent !== writeContent) {
 					const message = `Edit write completed but post-edit verification did not confirm the intended content for ${path}. Re-read the file before making follow-up edits.`;
-					return buildEditError(absolutePath, "post-edit-verification-mismatch", message, undefined, {
-							expectedLength: writeContent.length,
-							actualLength: verifiedContent.length,
-						},
-						postWriteMutationContextHygiene,
-					);
+					return buildToolError("edit", "post-edit-verification-mismatch", message, {
+						path: absolutePath,
+						details: { expectedLength: writeContent.length, actualLength: verifiedContent.length },
+						contextHygiene: postWriteMutationContextHygiene,
+					});
 				}
 			}
 
@@ -644,7 +616,10 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				const code = err?.code;
 				if (typeof code === "string") {
 					const message = `File not readable: ${path}${err?.message ? ` — ${err.message}` : ""}`;
-					return buildEditError(absolutePath, "fs-error", message, undefined, { fsCode: code, fsMessage: err?.message });
+					return buildToolError("edit", "fs-error", message, {
+						path: absolutePath,
+						details: { fsCode: code, fsMessage: err?.message },
+					});
 				}
 				throw err;
 			}

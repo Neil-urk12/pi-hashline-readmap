@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
 import { resolveToCwd } from "./path-utils.js";
 import { ensureHashInit, formatHashlineDisplay } from "./hashline.js";
-import { buildPtcError, buildPtcLine, buildPtcWarning, type PtcLine, type PtcWarning } from "./ptc-value.js";
+import { buildPtcLine, buildPtcWarning, buildToolError, type PtcLine, type PtcWarning } from "./ptc-value.js";
 import { looksLikeBinary } from "./binary-detect.js";
 import { getOrGenerateMap } from "./map-cache.js";
 import { formatFileMapWithBudget } from "./readmap/formatter.js";
@@ -390,26 +390,11 @@ export function registerWriteTool(pi: ExtensionAPI, options: WriteToolOptions = 
         });
       } catch (err: any) {
         const mapped = mapFsWriteError(err, absolutePath);
-        return {
-          content: [{ type: "text" as const, text: mapped.message }],
-          isError: true,
-          details: {
-            ptcValue: {
-              tool: "write" as const,
-              path: absolutePath,
-              lines: [] as PtcLine[],
-              warnings: [] as PtcWarning[],
-              ok: false,
-              error: buildPtcError(
-                mapped.code,
-                mapped.message,
-                undefined,
-                mapped.includeMeta ? { fsCode: err?.code, fsMessage: err?.message } : undefined,
-              ),
-            },
-            warnings: [] as string[],
-          },
-        };
+        return buildToolError("write", mapped.code, mapped.message, {
+          path: absolutePath,
+          ptcValue: { lines: [] as PtcLine[], warnings: [] as PtcWarning[] },
+          details: mapped.includeMeta ? { fsCode: err?.code, fsMessage: err?.message } : undefined,
+        });
       }
 
       if (result.ptcValue.lines.length > 0) {
@@ -422,36 +407,18 @@ export function registerWriteTool(pi: ExtensionAPI, options: WriteToolOptions = 
       // backward compatibility (see AC 12 — warnings namespace alignment).
       const binaryWarning = result.ptcValue.warnings.find((w) => w.code === "binary-content");
       if (binaryWarning) {
-        return {
-          content: [{ type: "text" as const, text: result.text }],
-          isError: true,
-          details: {
-            ptcValue: {
-              ...result.ptcValue,
-              ok: false,
-              error: buildPtcError("binary-content", binaryWarning.message),
-            },
-            warnings: result.warnings,
-            contextHygiene: result.contextHygiene,
-          },
-        };
+        return buildToolError("write", "binary-content", binaryWarning.message, {
+          ptcValue: result.ptcValue,
+          contextHygiene: result.contextHygiene,
+        });
       }
 
       const bareCrWarning = result.ptcValue.warnings.find((w) => w.code === "bare-cr");
       if (bareCrWarning) {
-        return {
-          content: [{ type: "text" as const, text: result.text }],
-          isError: true,
-          details: {
-            ptcValue: {
-              ...result.ptcValue,
-              ok: false,
-              error: buildPtcError("bare-cr", bareCrWarning.message),
-            },
-            warnings: result.warnings,
-            contextHygiene: result.contextHygiene,
-          },
-        };
+        return buildToolError("write", "bare-cr", bareCrWarning.message, {
+          ptcValue: result.ptcValue,
+          contextHygiene: result.contextHygiene,
+        });
       }
 
       return {

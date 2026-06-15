@@ -7,7 +7,7 @@ import { defineToolPromptMetadata } from "./tool-prompt-metadata.js";
 import { normalizeToLF, stripBom, hasBareCarriageReturn } from "./edit-diff.js";
 import { looksLikeBinary } from "./binary-detect.js";
 import { ensureHashInit, formatHashlineDisplay, escapeControlCharsForDisplay } from "./hashline.js";
-import { buildPtcError, buildPtcLine } from "./ptc-value.js";
+import { buildPtcLine, buildToolError } from "./ptc-value.js";
 import { buildGrepOutput } from "./grep-output.js";
 import { buildGrepRehydrateDescriptor } from "./context-hygiene.js";
 import { getOrGenerateMap } from "./map-cache.js";
@@ -314,76 +314,21 @@ export function registerGrepTool(pi: ExtensionAPI, options: GrepToolOptions = {}
 			const rawParams = params as GrepParams;
 			const context = coerceObviousBase10Int(rawParams.context, "context");
 			if (!context.ok) {
-				return {
-					content: [{ type: "text", text: context.message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "grep",
-							ok: false,
-							error: buildPtcError("invalid-params-combo", context.message),
-						},
-					},
-				};
+				return buildToolError("grep", "invalid-params-combo", context.message);
 			}
 			const limit = coerceObviousBase10Int(rawParams.limit, "limit");
 			if (!limit.ok) {
-				return {
-					content: [{ type: "text", text: limit.message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "grep",
-							ok: false,
-							error: buildPtcError("invalid-limit", limit.message),
-						},
-					},
-				};
+				return buildToolError("grep", "invalid-limit", limit.message);
 			}
 			const scopeContext = coerceObviousBase10Int(rawParams.scopeContext, "scopeContext");
 			if (!scopeContext.ok) {
-				return {
-					content: [{ type: "text", text: scopeContext.message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "grep",
-							ok: false,
-							error: buildPtcError("invalid-params-combo", scopeContext.message),
-						},
-					},
-				};
+				return buildToolError("grep", "invalid-params-combo", scopeContext.message);
 			}
 			if (scopeContext.value !== undefined && rawParams.scope !== "symbol") {
-				const message = 'Invalid scopeContext: requires scope: "symbol". For normal surrounding-line context outside symbol scope, use the `context` parameter.';
-				return {
-					content: [{
-						type: "text",
-						text: message,
-					}],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "grep",
-							ok: false,
-							error: buildPtcError("invalid-params-combo", message),
-						},
-					},
-				};
+				return buildToolError("grep", "invalid-params-combo", 'Invalid scopeContext: requires scope: "symbol". For normal surrounding-line context outside symbol scope, use the `context` parameter.');
 			}
 			if (scopeContext.value !== undefined && scopeContext.value < 0) {
-				const message = `Invalid scopeContext: expected a non-negative integer, received ${scopeContext.value}.`;
-				return {
-					content: [{ type: "text", text: message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "grep",
-							ok: false,
-							error: buildPtcError("invalid-params-combo", message),
-						},
-					},
-				};
+				return buildToolError("grep", "invalid-params-combo", `Invalid scopeContext: expected a non-negative integer, received ${scopeContext.value}.`);
 			}
 			const p: GrepParams = {
 				...rawParams,

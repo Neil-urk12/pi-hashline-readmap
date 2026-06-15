@@ -1,5 +1,6 @@
 import { computeLineHash, escapeControlCharsForDisplay } from "./hashline.js";
 import type { DiffData } from "./diff-data.js";
+import type { ContextHygieneMetadata } from "./context-hygiene.js";
 
 export interface PtcLine {
   line: number;
@@ -104,6 +105,66 @@ export function buildPtcError(
     ...(hint !== undefined ? { hint } : {}),
     ...(details !== undefined ? { details } : {}),
   };
+}
+
+/**
+ * Options for `buildToolError` — the deep module that owns the
+ * `{ content, isError, details: { ptcValue: { tool, ok: false, ... } } }`
+ * error envelope. Call sites supply intent (tool/code/message + optional
+ * path, hint, details, ptcValue overlay, contextHygiene); the factory owns
+ * the shape.
+ *
+ * The `ptcValue` overlay is the seam that lets write.ts's `binary-content`
+ * and `bare-cr` errors spread an existing result's ptcValue (lines,
+ * warnings) into the error envelope without rebuilding the shape inline.
+ */
+export interface BuildToolErrorOptions<TTool extends string> {
+	path?: string;
+	hint?: string;
+	details?: unknown;
+	ptcValue?: Record<string, unknown>;
+	contextHygiene?: ContextHygieneMetadata;
+}
+
+/**
+ * Build the standard tool error envelope. Replaces the 13-line raw shape
+ * (`{ content: [...], isError: true, details: { ptcValue: { tool, ok: false, path, error } } }`)
+ * that was previously repeated in read/grep/sg/write/edit.
+ *
+ * The factory narrows `ptcValue.tool` to the literal string passed in
+ * (so `buildToolError("read", ...)` returns `ptcValue.tool: "read"`) and
+ * pins `ok: false` as part of the error contract. The `ptcValue` overlay
+ * (when supplied) is spread into the envelope before the factory-owned
+ * `tool` and `ok: false`, so call sites can't accidentally widen the
+ * error contract.
+ */
+export function buildToolError<TTool extends string>(
+	tool: TTool,
+	code: string,
+	message: string,
+	opts?: BuildToolErrorOptions<TTool>,
+): {
+	content: [{ type: "text"; text: string }];
+	isError: true;
+	details: {
+		ptcValue: { tool: TTool; ok: false; path?: string; error: PtcError } & Record<string, unknown>;
+		contextHygiene?: ContextHygieneMetadata;
+	};
+} {
+	return {
+		content: [{ type: "text" as const, text: message }],
+		isError: true as const,
+		details: {
+			ptcValue: {
+				...opts?.ptcValue,
+				tool,
+				ok: false as const,
+				...(opts?.path !== undefined ? { path: opts.path } : {}),
+				error: buildPtcError(code, message, opts?.hint, opts?.details),
+			},
+			...(opts?.contextHygiene ? { contextHygiene: opts.contextHygiene } : {}),
+		},
+	};
 }
 
 export function buildPtcRange(startLine: number, endLine: number, totalLines?: number): PtcRange {

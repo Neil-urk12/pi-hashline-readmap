@@ -11,7 +11,7 @@ import { defineToolPromptMetadata } from "./tool-prompt-metadata.js";
 import { readFile as fsReadFile } from "fs/promises";
 import { normalizeToLF, stripBom, hasBareCarriageReturn } from "./edit-diff.js";
 import { ensureHashInit, formatHashlineDisplay } from "./hashline.js";
-import { buildPtcError, buildPtcWarning, buildPtcLines, type PtcWarning } from "./ptc-value.js";
+import { buildPtcWarning, buildPtcLines, buildToolError, type PtcWarning } from "./ptc-value.js";
 import { looksLikeBinary } from "./binary-detect.js";
 import { resolveToCwd } from "./path-utils.js";
 import { throwIfAborted } from "./runtime.js";
@@ -144,63 +144,17 @@ export function registerReadTool(pi: ExtensionAPI, options: ReadToolOptions = {}
 			const rawParams = params as ReadParams;
 			const offset = coerceObviousBase10Int(rawParams.offset, "offset");
 			if (!offset.ok) {
-				return {
-					content: [{ type: "text", text: offset.message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "read",
-							ok: false,
-							path: rawParams.path,
-							error: buildPtcError("invalid-offset", offset.message),
-						},
-					},
-				};
+				return buildToolError("read", "invalid-offset", offset.message, { path: rawParams.path });
 			}
 			const limit = coerceObviousBase10Int(rawParams.limit, "limit");
 			if (!limit.ok) {
-				return {
-					content: [{ type: "text", text: limit.message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "read",
-							ok: false,
-							path: rawParams.path,
-							error: buildPtcError("invalid-limit", limit.message),
-						},
-					},
-				};
+				return buildToolError("read", "invalid-limit", limit.message, { path: rawParams.path });
 			}
 			if (limit.value !== undefined && limit.value < 1) {
-				const message = `Invalid limit: expected a positive integer, received ${limit.value}.`;
-				return {
-					content: [{ type: "text", text: message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "read",
-							ok: false,
-							path: rawParams.path,
-							error: buildPtcError("invalid-limit", message),
-						},
-					},
-				};
+				return buildToolError("read", "invalid-limit", `Invalid limit: expected a positive integer, received ${limit.value}.`, { path: rawParams.path });
 			}
 			if (offset.value !== undefined && offset.value < 1) {
-				const message = `Invalid offset: expected a positive integer, received ${offset.value}.`;
-				return {
-					content: [{ type: "text", text: message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "read",
-							ok: false,
-							path: rawParams.path,
-							error: buildPtcError("invalid-offset", message),
-						},
-					},
-				};
+				return buildToolError("read", "invalid-offset", `Invalid offset: expected a positive integer, received ${offset.value}.`, { path: rawParams.path });
 			}
 			const p = {
 				...rawParams,
@@ -210,19 +164,7 @@ export function registerReadTool(pi: ExtensionAPI, options: ReadToolOptions = {}
 			if (rawParams.symbol !== undefined) {
 				const trimmedSymbol = typeof rawParams.symbol === "string" ? rawParams.symbol.trim() : "";
 				if (trimmedSymbol.length === 0) {
-					const message = "Invalid symbol: expected a non-empty string.";
-					return {
-						content: [{ type: "text", text: message }],
-						isError: true,
-						details: {
-							ptcValue: {
-								tool: "read",
-								ok: false,
-								path: rawParams.path,
-								error: buildPtcError("invalid-params-combo", message),
-							},
-						},
-					};
+					return buildToolError("read", "invalid-params-combo", "Invalid symbol: expected a non-empty string.", { path: rawParams.path });
 				}
 				p.symbol = trimmedSymbol;
 			}
@@ -238,64 +180,16 @@ export function registerReadTool(pi: ExtensionAPI, options: ReadToolOptions = {}
 
 			throwIfAborted(signal);
 			if (p.symbol && (p.offset !== undefined || p.limit !== undefined)) {
-				const message = "Cannot combine symbol with offset/limit. Use one or the other.";
-				return {
-					content: [{ type: "text", text: message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "read",
-							ok: false,
-							path: rawParams.path,
-							error: buildPtcError("invalid-params-combo", message),
-						},
-					},
-				};
+				return buildToolError("read", "invalid-params-combo", "Cannot combine symbol with offset/limit. Use one or the other.", { path: rawParams.path });
 			}
 			if (p.bundle && !p.symbol) {
-				const message = 'Cannot use bundle without symbol. Use read({ path, symbol, bundle: "local" }).';
-				return {
-					content: [{ type: "text", text: message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "read",
-							ok: false,
-							path: rawParams.path,
-							error: buildPtcError("invalid-params-combo", message),
-						},
-					},
-				};
+				return buildToolError("read", "invalid-params-combo", 'Cannot use bundle without symbol. Use read({ path, symbol, bundle: "local" }).', { path: rawParams.path });
 			}
 			if (p.bundle && p.map) {
-				const message = "Cannot combine bundle with map. Use one or the other.";
-				return {
-					content: [{ type: "text", text: message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "read",
-							ok: false,
-							path: rawParams.path,
-							error: buildPtcError("invalid-params-combo", message),
-						},
-					},
-				};
+				return buildToolError("read", "invalid-params-combo", "Cannot combine bundle with map. Use one or the other.", { path: rawParams.path });
 			}
 			if (p.map && p.symbol) {
-				const message = "Cannot combine map with symbol. Use one or the other.";
-				return {
-					content: [{ type: "text", text: message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "read",
-							ok: false,
-							path: rawParams.path,
-							error: buildPtcError("invalid-params-combo", message),
-						},
-					},
-				};
+				return buildToolError("read", "invalid-params-combo", "Cannot combine map with symbol. Use one or the other.", { path: rawParams.path });
 			}
 			// Delegate images to the built-in read tool
 			throwIfAborted(signal);
@@ -312,70 +206,21 @@ export function registerReadTool(pi: ExtensionAPI, options: ReadToolOptions = {}
 			} catch (err: any) {
 				const code = err?.code;
 				if (code === "EISDIR") {
-					const message = `Path is a directory: ${rawPath}. Use ls to inspect directories.`;
-					return {
-						content: [{ type: "text", text: message }],
-						isError: true,
-						details: {
-							ptcValue: {
-								tool: "read",
-								ok: false,
-								path: rawParams.path,
-								error: buildPtcError(
-									"path-is-directory",
-									message,
-									`Use ls(${JSON.stringify(rawPath)}) to inspect directories.`,
-								),
-							},
-						},
-					};
+					return buildToolError("read", "path-is-directory", `Path is a directory: ${rawPath}. Use ls to inspect directories.`, {
+						path: rawParams.path,
+						hint: `Use ls(${JSON.stringify(rawPath)}) to inspect directories.`,
+					});
 				}
 				if (code === "EACCES" || code === "EPERM") {
-					const message = `Permission denied — cannot access: ${rawPath}`;
-					return {
-						content: [{ type: "text", text: message }],
-						isError: true,
-						details: {
-							ptcValue: {
-								tool: "read",
-								ok: false,
-								path: rawParams.path,
-								error: buildPtcError("permission-denied", message),
-							},
-						},
-					};
+					return buildToolError("read", "permission-denied", `Permission denied — cannot access: ${rawPath}`, { path: rawParams.path });
 				}
 				if (code === "ENOENT") {
-					const message = `File not found: ${rawPath}`;
-					return {
-						content: [{ type: "text", text: message }],
-						isError: true,
-						details: {
-							ptcValue: {
-								tool: "read",
-								ok: false,
-								path: rawParams.path,
-								error: buildPtcError("file-not-found", message),
-							},
-						},
-					};
+					return buildToolError("read", "file-not-found", `File not found: ${rawPath}`, { path: rawParams.path });
 				}
-				const message = `File not readable: ${rawPath}${err?.message ? ` — ${err.message}` : ""}`;
-				return {
-					content: [{ type: "text", text: message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "read",
-							ok: false,
-							path: rawParams.path,
-							error: buildPtcError("fs-error", message, undefined, {
-								fsCode: code,
-								fsMessage: err?.message,
-							}),
-						},
-					},
-				};
+				return buildToolError("read", "fs-error", `File not readable: ${rawPath}${err?.message ? ` — ${err.message}` : ""}`, {
+					path: rawParams.path,
+					details: { fsCode: code, fsMessage: err?.message },
+				});
 			}
 
 			if (isSupportedImageBuffer(rawBuffer)) {
@@ -391,19 +236,7 @@ export function registerReadTool(pi: ExtensionAPI, options: ReadToolOptions = {}
 			let startLine = p.offset !== undefined ? p.offset : 1;
 			let endIdx = p.limit !== undefined ? Math.min(startLine - 1 + p.limit, total) : total;
 			if (p.offset !== undefined && startLine > total) {
-				const message = `[offset ${p.offset} is past end of file (${total} lines)]`;
-				return {
-					content: [{ type: "text", text: message }],
-					isError: true,
-					details: {
-						ptcValue: {
-							tool: "read",
-							ok: false,
-							path: rawParams.path,
-							error: buildPtcError("offset-past-end", message),
-						},
-					},
-				};
+				return buildToolError("read", "offset-past-end", `[offset ${p.offset} is past end of file (${total} lines)]`, { path: rawParams.path });
 			}
 			let symbolMatch: SymbolMatch | undefined;
 			let symbolFileMap: Awaited<ReturnType<typeof getOrGenerateMap>> | null = null;
