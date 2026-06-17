@@ -64,6 +64,10 @@ Copy the updated `LINE:HASH` and retry. If the target moved farther away, re-run
 
 If `edit` auto-relocates an anchor, check the warning and verify the edit landed in the intended place.
 
+## Pasted read output
+
+If `new_text` carries a `LINE:HASH|` prefix that matches a real anchor in the current file, the edit is rejected with a `paste-detected` error. This catches the case where `read`/`grep`/`ast_search`/`write` output was accidentally pasted into `new_text` instead of the bare content (which would otherwise silently corrupt the file). The error message lists every offending line with fresh `LINE:HASH|content` references. Re-read the file and pass only the content after the `|` separator for those lines.
+
 ## Validation and warnings
 
 - All edits are checked before writing; if a hard validation fails, nothing is written.

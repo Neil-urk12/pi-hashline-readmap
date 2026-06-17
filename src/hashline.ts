@@ -7,7 +7,7 @@
 
 import xxhashWasm from "xxhash-wasm";
 import { throwIfAborted } from "./runtime.js";
-import type { PtcLine } from "./ptc-value.js";
+import { buildPtcLine, type PtcLine } from "./ptc-value.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -31,6 +31,16 @@ export class HashlineMismatchError extends Error {
 		super(message);
 		this.name = "HashlineMismatchError";
 		this.updatedAnchors = updatedAnchors;
+	}
+}
+
+export class PasteDetectedError extends Error {
+	readonly offendingLines: PtcLine[];
+
+	constructor(message: string, offendingLines: PtcLine[]) {
+		super(message);
+		this.name = "PasteDetectedError";
+		this.offendingLines = offendingLines;
 	}
 }
 
@@ -278,6 +288,41 @@ function stripNewLinePrefixes(lines: string[]): string[] {
 					? l.replace(DIFF_PLUS_RE, "")
 					: l,
 	);
+}
+
+/**
+ * Detect lines in `dstLines` whose `LINE:HASH|` prefix matches a real
+ * file-line anchor in `fileLines`. Used to catch the case where a model
+ * pastes read output (with anchors) into `new_text`, which the silent
+ * prefix-strip in `stripNewLinePrefixes` would otherwise turn into
+ * cross-line content corruption or anchor-line duplication.
+ *
+ * Returns the set of offending line numbers. An empty result means no
+ * real-anchor paste was detected. The check is per-line: a single
+ * offending line in the dstLines is enough to reject the edit.
+ */
+export function detectPastedRealAnchors(
+	dstLines: readonly string[],
+	fileLines: readonly string[],
+): { line: number; hash: string }[] {
+	const offending: { line: number; hash: string }[] = [];
+	// Real anchors are exactly HASH_LEN hex chars; use a stricter capture
+	// than HASHLINE_PREFIX_RE so a benign prefix like "5:longer|content"
+	// (where "longer" isn't a real hash) is not flagged.
+	const capture = new RegExp(`^(\\d+):([0-9a-fA-F]{${HASH_LEN}})\\|`);
+	for (const line of dstLines) {
+		if (!HASHLINE_PREFIX_RE.test(line)) continue;
+		const match = line.match(capture);
+		if (!match) continue;
+		const n = Number.parseInt(match[1], 10);
+		const h = match[2].toLowerCase();
+		if (n < 1 || n > fileLines.length) continue;
+		const actual = computeLineHash(n, fileLines[n - 1]);
+		if (actual === h) {
+			offending.push({ line: n, hash: h });
+		}
+	}
+	return offending;
 }
 
 // ─── Whitespace / format helpers ────────────────────────────────────────
@@ -559,6 +604,98 @@ export function applyHashlineEdits(
 
 	// Recompute after potential relocation
 	explicitlyTouchedLines = collectExplicitlyTouchedLines();
+
+	// Detect pasted real anchors in new_text — the model may have
+	// accidentally pasted read output (with anchors) into new_text, which
+	// stripNewLinePrefixes would otherwise silently turn into cross-line
+	// content corruption or anchor-line duplication. Run after validation
+	// so stale anchors on the edit itself have already been rejected.
+	const offendingByLine = new Map<number, { line: number; hash: string }>();
+	for (let i = 0; i < parsed.length; i++) {
+		const edit = parsed[i];
+		const rawEdit = edits[i];
+		let rawNewText: string;
+		let editAnchorLine: number | undefined;
+		let editKind: "set_line" | "replace_lines" | "insert_after" | "replace";
+		let replaceLinesEndAnchorLine: number | undefined;
+		if ("set_line" in rawEdit) {
+			rawNewText = rawEdit.set_line.new_text;
+			editAnchorLine = edit.spec.kind === "single" ? edit.spec.ref.line : undefined;
+			editKind = "set_line";
+		} else if ("replace_lines" in rawEdit) {
+			rawNewText = rawEdit.replace_lines.new_text;
+			editKind = "replace_lines";
+			if (edit.spec.kind === "range") {
+				editAnchorLine = edit.spec.start.line;
+				replaceLinesEndAnchorLine = edit.spec.end.line;
+			}
+		} else if ("insert_after" in rawEdit) {
+			rawNewText = rawEdit.insert_after.new_text ?? rawEdit.insert_after.text ?? "";
+			editAnchorLine = edit.spec.kind === "insertAfter" ? edit.spec.after.line : undefined;
+			editKind = "insert_after";
+		} else {
+			continue; // legacy replace dialect — not subject to paste detection
+		}
+		const rawLines = splitDst(rawNewText);
+		const detected = detectPastedRealAnchors(rawLines, fileLines);
+		if (detected.length === 0) continue;
+		// Filter: for insert_after with multi-line new_text, the first line
+		// being a self-paste is handled by stripInsertAnchorEcho. Skip it.
+		const filterFirst =
+			editKind === "insert_after" && rawLines.length > 1 ? rawLines[0] : undefined;
+		for (const d of detected) {
+			// Filter: insert_after with multi-line new_text where the
+			// offending line is the first line and matches the edit's
+			// anchor is handled by stripInsertAnchorEcho. Skip it.
+			if (filterFirst !== undefined) {
+				const m = filterFirst.match(
+					new RegExp(`^(\\d+):([0-9a-fA-F]{${HASH_LEN}})\\|`),
+				);
+				if (m && Number.parseInt(m[1], 10) === d.line && d.line === editAnchorLine) {
+					continue;
+				}
+			}
+			// Filter: set_line/replace_lines with a self-paste is handled
+			// by noop detection. For replace_lines, both the start and
+			// end anchors are part of the edit — both lines should be
+			// allowed to fall through to noop detection.
+			let selfPasteAllowed = false;
+			if (editKind === "set_line" && d.line === editAnchorLine) {
+				selfPasteAllowed = true;
+			} else if (editKind === "replace_lines") {
+				if (
+					d.line === editAnchorLine ||
+					d.line === replaceLinesEndAnchorLine
+				) {
+					selfPasteAllowed = true;
+				}
+			}
+			if (selfPasteAllowed) {
+				continue;
+			}
+			offendingByLine.set(d.line, d);
+		}
+	}
+	if (offendingByLine.size > 0) {
+		const offendingLines: PtcLine[] = [];
+		for (const d of offendingByLine.values()) {
+			const raw = fileLines[d.line - 1] ?? "";
+			offendingLines.push(buildPtcLine(d.line, raw));
+		}
+		const out: string[] = [
+			"Edit rejected — nothing was written. new_text contains a LINE:HASH| prefix that matches a real anchor in the current file. This usually means read output was accidentally pasted into new_text instead of the bare content.",
+			`${offendingLines.length} offending line${offendingLines.length > 1 ? "s" : ""}:`,
+			"",
+		];
+		for (const line of offendingLines) {
+			out.push(`>>> ${line.anchor}|${escapeControlCharsForDisplay(line.raw)}`);
+		}
+		out.push("");
+		out.push(
+			"Re-read the file and pass only the content after the `|` separator for these lines (no `LINE:HASH|` prefix).",
+		);
+		throw new PasteDetectedError(out.join("\n"), offendingLines);
+	}
 
 	// Detect conflicting duplicate single-target edits and deduplicate identical edits.
 	// For single-target edits, keep the last identical occurrence so resolution remains last-wins.

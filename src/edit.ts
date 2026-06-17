@@ -5,7 +5,7 @@ import { defineToolPromptMetadata } from "./tool-prompt-metadata.js";
 import { readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { createPatch } from "diff";
 import { detectLineEnding, generateCompactOrFullDiff, normalizeToLF, replaceText, restoreLineEndings, stripBom } from "./edit-diff.js";
-import { HashlineMismatchError, applyHashlineEdits, computeLineHash, ensureHashInit, parseLineRef, type HashlineEditItem, escapeControlCharsForDisplay } from "./hashline.js";
+import { HashlineMismatchError, PasteDetectedError, applyHashlineEdits, computeLineHash, ensureHashInit, parseLineRef, type HashlineEditItem, escapeControlCharsForDisplay } from "./hashline.js";
 import { resolveToCwd } from "./path-utils.js";
 import { throwIfAborted } from "./runtime.js";
 import { buildEditOutput } from "./edit-output.js";
@@ -370,6 +370,12 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			try {
 				anchorResult = applyHashlineEdits(result, anchorEdits, signal);
 			} catch (err) {
+				if (err instanceof PasteDetectedError) {
+					return buildToolError("edit", "paste-detected", err.message, {
+						path: absolutePath,
+						details: { offendingLines: err.offendingLines },
+					});
+				}
 				if (err instanceof HashlineMismatchError) {
 					return buildToolError("edit", "hash-mismatch", err.message, {
 						path: absolutePath,

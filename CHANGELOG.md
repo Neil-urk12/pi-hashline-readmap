@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `edit` now rejects edits where `new_text` contains a `LINE:HASH|` prefix that matches a real anchor in the current file, with a new `paste-detected` `PtcErrorCode`. Catches the silent-data-corruption failure mode where read output is accidentally pasted into `new_text` instead of the bare content. The same-line paste case is unaffected (still routes to the existing `noopEdits` path); the multi-line `insert_after` self-paste-with-extra-content case is unaffected (still routes to `stripInsertAnchorEcho`).
+
 ## [0.8.16] - 2026-05-28
 
 ### Changed

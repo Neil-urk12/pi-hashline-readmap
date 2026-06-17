@@ -25,6 +25,7 @@ export const PTC_ERROR_CODES = {
   // edit
   "file-not-read": { description: "edit called on a path that was not read in this session", trigger: "wasReadInSession returned false" },
   "hash-mismatch": { description: "edit anchors do not verify against current file contents", trigger: "applyHashlineEdits detected stale anchors" },
+  "paste-detected": { description: "edit rejected because new_text contains a real LINE:HASH| anchor from the file", trigger: "detectPastedRealAnchors found a line in new_text whose prefix matches a real file-line anchor" },
   "no-op": { description: "edits produced identical content", trigger: "originalNormalized === result after applying edits" },
   "text-not-found": { description: "replace.old_text not present in file", trigger: "replaceText returned 0 matches" },
   "binary-file": { description: "edit refused because file is binary", trigger: "isBinaryBuffer detected NUL bytes" },
