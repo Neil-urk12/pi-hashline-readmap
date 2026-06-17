@@ -1,12 +1,6 @@
 import type { PtcLine, PtcRange } from "./ptc-value.js";
-import {
-  buildContextHygieneMetadata,
-  buildFileResource,
-  buildSymbolResource,
-  type ContextHygieneMetadata,
-  type ContextHygieneRehydrateDescriptor,
-  type ContextHygieneResource,
-} from "./context-hygiene.js";
+import { type ContextHygieneMetadata, type ContextHygieneRehydrateDescriptor } from "./context-hygiene.js";
+import { buildToolOutput, type ToolOutputFileRef, type ToolOutputSymbolRef } from "./tool-output.js";
 
 export interface SgOutputFile {
   displayPath: string;
@@ -37,19 +31,20 @@ export interface SgOutputResult {
 
 export function buildSgOutput(input: BuildSgOutputInput): SgOutputResult {
   if (input.files.length === 0) {
-    return {
-      text: `No matches found for pattern: ${input.pattern}`,
-      ptcValue: {
-        tool: "ast_search",
-        files: [],
-      },
-      contextHygiene: buildContextHygieneMetadata({
-        tool: "ast_search",
-        classification: "search-context",
-        resources: [],
-        rehydrate: input.rehydrate ?? undefined,
-      }),
+    const emptyPtcValue: SgOutputResult["ptcValue"] = {
+      tool: "ast_search",
+      files: [],
     };
+    const { text, ptcValue, contextHygiene } = buildToolOutput({
+      tool: "ast_search",
+      classification: "search-context",
+      text: `No matches found for pattern: ${input.pattern}`,
+      ptcValue: emptyPtcValue,
+      files: [],
+      symbols: [],
+      rehydrate: input.rehydrate,
+    });
+    return { text, ptcValue, contextHygiene };
   }
 
   const blocks: string[] = [];
@@ -60,29 +55,26 @@ export function buildSgOutput(input: BuildSgOutputInput): SgOutputResult {
     }
   }
 
-  const contextHygieneResources: ContextHygieneResource[] = [];
-  for (const file of input.files) {
-    contextHygieneResources.push(buildFileResource(file.path));
-    for (const symbol of file.symbols ?? []) {
-      contextHygieneResources.push(buildSymbolResource(file.path, symbol.name, symbol.kind));
-    }
-  }
-
-  return {
-    text: blocks.join("\n"),
-    ptcValue: {
-      tool: "ast_search",
-      files: input.files.map((file) => ({
-        path: file.path,
-        ranges: file.ranges.map((range) => ({ ...range })),
-        lines: file.lines.map((line) => ({ ...line })),
-      })),
-    },
-    contextHygiene: buildContextHygieneMetadata({
-      tool: "ast_search",
-      classification: "search-context",
-      resources: contextHygieneResources,
-      rehydrate: input.rehydrate ?? undefined,
-    }),
+  const ptcValue: SgOutputResult["ptcValue"] = {
+    tool: "ast_search",
+    files: input.files.map((file) => ({
+      path: file.path,
+      ranges: file.ranges.map((range) => ({ ...range })),
+      lines: file.lines.map((line) => ({ ...line })),
+    })),
   };
+
+  const { text, contextHygiene } = buildToolOutput({
+    tool: "ast_search",
+    classification: "search-context",
+    text: blocks.join("\n"),
+    ptcValue,
+    files: input.files.map<ToolOutputFileRef>((file) => ({ path: file.path })),
+    symbols: input.files.flatMap<ToolOutputSymbolRef>((file) =>
+      (file.symbols ?? []).map((symbol) => ({ path: file.path, name: symbol.name, kind: symbol.kind })),
+    ),
+    rehydrate: input.rehydrate,
+  });
+
+  return { text, ptcValue, contextHygiene };
 }

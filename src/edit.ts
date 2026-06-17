@@ -21,7 +21,8 @@ import { buildEditPreviewKey, buildPendingEditPreviewData, resolvePendingDiffPre
 import { buildDiffData, type DiffBlockRange } from "./diff-data.js";
 import { clampLineToWidth, clampLinesToWidth, isRendererExpanded, linkToolPath, summaryLine } from "./tui-render-utils.js";
 import { DiffPreviewComponent } from "./tui-diff-component.js";
-import { buildContextHygieneMetadata, buildFileResource, type ContextHygieneMetadata } from "./context-hygiene.js";
+import { type ContextHygieneMetadata } from "./context-hygiene.js";
+import { buildMutationContextHygiene } from "./tool-output.js";
 import { resolveEditDiffDisplay } from "./hashline-settings.js";
 import type { InlineDiffMetadata } from "./diff-renderer/model.js";
 import { languageForPath } from "./diff-renderer/language.js";
@@ -496,11 +497,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			}
 
 			if (input.postEditVerify === true) {
-				const postWriteMutationContextHygiene = buildContextHygieneMetadata({
-					tool: "edit",
-					classification: "mutation",
-					resources: [buildFileResource(absolutePath)],
-				});
+				const postWriteMutationContextHygiene = buildMutationContextHygiene("edit", absolutePath);
 				let verifiedContent: string;
 				try {
 					const verified = await fsReadFile(absolutePath, "utf-8");

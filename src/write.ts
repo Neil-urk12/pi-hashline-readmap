@@ -9,7 +9,8 @@ import { buildPtcLine, buildPtcWarning, buildToolError, type PtcLine, type PtcWa
 import { looksLikeBinary } from "./binary-detect.js";
 import { getOrGenerateMap } from "./map-cache.js";
 import { formatFileMapWithBudget } from "./readmap/formatter.js";
-import { buildContextHygieneMetadata, buildFileResource, type ContextHygieneMetadata } from "./context-hygiene.js";
+import { type ContextHygieneMetadata } from "./context-hygiene.js";
+import { buildMutationContextHygiene } from "./tool-output.js";
 import { defineToolPromptMetadata } from "./tool-prompt-metadata.js";
 import { buildPendingWritePreviewData, buildWritePreviewKey, resolvePendingDiffPreview, type PendingDiffPreviewResult } from "./pending-diff-preview.js";
 import { generateCompactOrFullDiff, normalizeToLF, hasBareCarriageReturn } from "./edit-diff.js";
@@ -191,11 +192,7 @@ export async function executeWrite(opts: {
   const { path: filePath, content, map: requestMap, cwd } = opts;
   const warnings: string[] = [];
   const ptcWarnings: PtcWarning[] = [];
-  const contextHygiene = buildContextHygieneMetadata({
-    tool: "write",
-    classification: "mutation",
-    resources: [buildFileResource(filePath)],
-  });
+  const contextHygiene = buildMutationContextHygiene("write", filePath);
 
   if (hasBareCarriageReturn(content)) {
     const message = "File content contains bare CR (\\r) line endings; write refuses to emit anchors that read/edit would normalize differently.";

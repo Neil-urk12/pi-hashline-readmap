@@ -120,6 +120,26 @@ export function buildToolOutput<TPtc extends { tool: string }>(
   return { text, ptcValue: input.ptcValue, contextHygiene };
 }
 
+/**
+ * Build the `ContextHygieneMetadata` for an error envelope whose body is a
+ * mutation (e.g. `postEditVerify` failure). Sibling of {@link buildToolOutput}
+ * for the case where the metadata is a property of `buildToolError` rather
+ * than a return value of the success-path triple.
+ *
+ * @param tool - the mutation tool name (`"edit"` or `"write"`)
+ * @param path - absolute path of the file the mutation targets
+ */
+export function buildMutationContextHygiene(
+  tool: "edit" | "write",
+  path: string,
+): ContextHygieneMetadata {
+  return buildContextHygieneMetadata({
+    tool,
+    classification: "mutation",
+    resources: [buildFileResource(path)],
+  });
+}
+
 const DEFAULT_TRUNCATION_ADVICE = "Refine pattern or increase limit.";
 
 function applyBudget(

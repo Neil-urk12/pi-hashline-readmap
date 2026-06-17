@@ -1,6 +1,7 @@
 import { countEditTypes, parseDiffStats } from "./edit-render-helpers.js";
 import { buildPtcEditResult, type SemanticSummary } from "./ptc-value.js";
-import { buildContextHygieneMetadata, buildFileResource, type ContextHygieneMetadata } from "./context-hygiene.js";
+import { type ContextHygieneMetadata } from "./context-hygiene.js";
+import { buildMutationContextHygiene } from "./tool-output.js";
 import type { DiffData } from "./diff-data.js";
 export interface BuildEditOutputInput {
   path: string;
@@ -98,10 +99,6 @@ export function buildEditOutput(input: BuildEditOutputInput): EditOutputResult {
       noopEdits: input.noopEdits,
       ...(input.semanticSummary ? { semanticSummary: input.semanticSummary } : {}),
     }),
-    contextHygiene: buildContextHygieneMetadata({
-      tool: "edit",
-      classification: "mutation",
-      resources: [buildFileResource(input.path)],
-    }),
+    contextHygiene: buildMutationContextHygiene("edit", input.path),
   };
 }
