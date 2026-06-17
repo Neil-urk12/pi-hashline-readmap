@@ -379,7 +379,8 @@ export function registerWriteTool(pi: ExtensionAPI, options: WriteToolOptions = 
     async execute(_toolCallId: string, params: { path: string; content: string; map?: boolean }, _signal: AbortSignal | undefined, _onUpdate: any, ctx: any): Promise<any> {
       const cwd = ctx?.cwd ?? process.cwd();
       const absolutePath = resolveToCwd(params.path, cwd);
-      return withFileMutationQueue(absolutePath, async () => {
+      try {
+        return await withFileMutationQueue(absolutePath, async () => {
       let result: WriteResult;
       try {
         result = await executeWrite({
@@ -433,7 +434,19 @@ export function registerWriteTool(pi: ExtensionAPI, options: WriteToolOptions = 
           contextHygiene: result.contextHygiene,
         },
       };
-      });
+        });
+      } catch (err: any) {
+        // Catch errors that escape withFileMutationQueue itself — e.g. the
+        // queue's getMutationQueueKey() calls realpath() before our callback
+        // runs, so an EACCES/EPERM on the target path throws here, not from
+        // our mkdirSync/writeFileSync. Apply the same friendly mapping.
+        const mapped = mapFsWriteError(err, absolutePath);
+        return buildToolError("write", mapped.code, mapped.message, {
+          path: absolutePath,
+          ptcValue: { lines: [] as PtcLine[], warnings: [] as PtcWarning[] },
+          details: mapped.includeMeta ? { fsCode: err?.code, fsMessage: err?.message } : undefined,
+        });
+      }
     },
     renderCall(args: any, theme: any, context: any = {}) {
       const { path, content } = args as { path: string; content?: string };
