@@ -140,34 +140,6 @@ export type {
   HashlineToolPtcPolicy,
   HashlineToolPtcPolicyEntry,
 } from "./src/ptc-tool-policy.js";
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  return `${(bytes / 1024).toFixed(1)} KB`;
-}
-
-function buildRtkNotice(
-  info: {
-    originalBytes: number;
-    outputBytes: number;
-    compressionRatio: number;
-    technique: string;
-    bypassedBy?: string;
-  },
-  command: string,
-  outputIsEmpty: boolean,
-): string | null {
-  if (info.bypassedBy !== undefined) return null;
-  if (outputIsEmpty) return null;
-  if (info.originalBytes <= 2000) return null;
-  if (info.compressionRatio >= 0.5) return null;
-  const pct = Math.round((1 - info.compressionRatio) * 100);
-  return `[RTK: compressed ${info.technique} output ${formatBytes(info.originalBytes)} → ${formatBytes(info.outputBytes)} (${pct}% saved). Use \`PI_RTK_BYPASS=1 ${command}\` to see full output.]`;
-}
-
-function willBashContextGuardTrim(text: string, config: BashContextGuardConfig): boolean {
-  return config.enabled && text !== "" && (text.split("\n").length > config.maxLines || Buffer.byteLength(text, "utf8") > config.maxBytes);
-}
-
 export default function piHashlineReadmapExtension(pi: ExtensionAPI): void {
   // readTurns maps an absolute path to the tracker event id of the most recent
   // live-anchor tool result for that path (read / grep / ast_search / write).
