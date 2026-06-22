@@ -4,7 +4,7 @@ import type { Static } from "@sinclair/typebox";
 import { defineToolPromptMetadata } from "./tool-prompt-metadata.js";
 import { readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { createPatch } from "diff";
-import { detectLineEnding, generateCompactOrFullDiff, normalizeToLF, replaceText, restoreLineEndings, stripBom } from "./edit-diff.js";
+import { detectLineEnding, normalizeToLF, replaceText, restoreLineEndings, stripBom } from "./edit-diff.js";
 import { HashlineMismatchError, PasteDetectedError, applyHashlineEdits, computeLineHash, ensureHashInit, parseLineRef, type HashlineEditItem, escapeControlCharsForDisplay } from "./hashline.js";
 import { resolveToCwd } from "./path-utils.js";
 import { throwIfAborted } from "./runtime.js";
@@ -18,25 +18,20 @@ import { validateSyntaxRegression } from "./edit-syntax-validate.js";
 import { resolveSyntaxValidateMode, type SyntaxValidateOptions } from "./syntax-validate-mode.js";
 import { replaceSymbol } from "./replace-symbol.js";
 import { buildEditPreviewKey, buildPendingEditPreviewData, resolvePendingDiffPreview, type PendingDiffPreviewResult } from "./pending-diff-preview.js";
-import { buildDiffData, type DiffBlockRange } from "./diff-data.js";
+import { buildAllDiffs, type DiffBlockRange } from "./diff-builder.js";
 import { clampLineToWidth, clampLinesToWidth, isRendererExpanded, linkToolPath, summaryLine } from "./tui-render-utils.js";
 import { DiffPreviewComponent } from "./tui-diff-component.js";
 import { type ContextHygieneMetadata } from "./context-hygiene.js";
 import { buildMutationContextHygiene } from "./tool-output.js";
 import { resolveEditDiffDisplay } from "./hashline-settings.js";
-import type { InlineDiffMetadata } from "./diff-renderer/model.js";
-import { languageForPath } from "./diff-renderer/language.js";
-import { parseInlineDiff } from "./diff-renderer/parse.js";
-import { summarizeDiffCounts } from "./diff-renderer/summary.js";
+import type { InlineDiffMetadata } from "./diff-builder.js";
 
 const EDIT_PENDING_PREVIEW_STATE_KEY = "hashline-edit-pending-preview";
-const MAX_INLINE_DIFF_CONTENT_CHARS = 200_000;
 
-function pendingPreviewLines(summary: string, preview: PendingDiffPreviewResult | undefined, expanded: boolean): { lines: string[]; diffData?: ReturnType<typeof buildDiffData>; headerLabel?: string } {
+function pendingPreviewLines(summary: string, preview: PendingDiffPreviewResult | undefined, expanded: boolean): { lines: string[]; diffData?: ReturnType<typeof buildAllDiffs>["diffData"]; headerLabel?: string } {
 	if (!preview || preview.type !== "ok") return { lines: summary.split("\n") };
-	const diffData = buildDiffData({ path: preview.data.filePath, oldContent: preview.data.previousContent, newContent: preview.data.nextContent, diff: preview.data.diff });
 	const headerLine = summaryLine(preview.data.headerLabel, { hidden: !expanded });
-	return { lines: [summary, headerLine], diffData: expanded ? diffData : undefined, headerLabel: preview.data.headerLabel };
+	return { lines: [summary, headerLine], diffData: expanded ? preview.data.diffData : undefined, headerLabel: preview.data.headerLabel };
 }
 
 export function wrapWriteError(err: any, path: string): Error {
@@ -520,20 +515,16 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 				}
 			}
 
-			const diffResult = generateCompactOrFullDiff(originalNormalized, result);
-			const patch = createPatch(path, originalNormalized, result);
 			const blockRanges: DiffBlockRange[] = rsProbeResults.map((probe) => ({
 				kind: "remove" as const,
 				startLine: probe.range.start,
 				endLine: probe.range.end,
 			}));
-			const diffData = buildDiffData({
-				path: absolutePath,
-				oldContent: originalNormalized,
-				newContent: result,
-				diff: diffResult.diff,
+			const r = buildAllDiffs(originalNormalized, result, absolutePath, {
 				...(blockRanges.length ? { blockRanges } : {}),
 			});
+			const diffData = r.diffData;
+			const patch = createPatch(path, originalNormalized, result);
 			const warnings: string[] = [];
 			if (anchorResult.warnings?.length) warnings.push(...anchorResult.warnings);
 			if (legacyNormalizationWarning) warnings.push(legacyNormalizationWarning);
@@ -562,39 +553,26 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			const builtOutput = buildEditOutput({
 				path: absolutePath,
 				displayPath: path,
-				diff: diffResult.diff,
+				diff: r.diff,
 				patch,
 				diffData,
-				firstChangedLine: anchorResult.firstChangedLine ?? diffResult.firstChangedLine,
+				firstChangedLine: anchorResult.firstChangedLine ?? r.firstChangedLine,
 				warnings,
 				noopEdits: anchorResult.noopEdits ?? [],
 				edits,
 				semanticSummary,
 			});
 
-			// Build inline diff metadata for the new diff-renderer. Skipped when
-			// contents are too large to render synchronously so the response stays snappy.
-			let inlineDiff: InlineDiffMetadata | undefined;
-			if (originalNormalized.length + result.length <= MAX_INLINE_DIFF_CONTENT_CHARS) {
-				const parsedInlineDiff = parseInlineDiff(originalNormalized, result);
-				inlineDiff = {
-					kind: "diff",
-					path: absolutePath,
-					summary: summarizeDiffCounts(parsedInlineDiff.added, parsedInlineDiff.removed),
-					language: languageForPath(path),
-					oldContent: originalNormalized,
-					newContent: result,
-				};
-			}
+			const inlineDiff = r.inlineDiff;
 
 			const warn = warnings.length ? `\n\nWarnings:\n${warnings.join("\n")}` : "";
 			return {
 				content: [{ type: "text", text: builtOutput.text }],
 				details: {
-					diff: diffResult.diff,
+					diff: r.diff,
 					patch: builtOutput.patch,
 					diffData,
-					firstChangedLine: anchorResult.firstChangedLine ?? diffResult.firstChangedLine,
+					firstChangedLine: anchorResult.firstChangedLine ?? r.firstChangedLine,
 					ptcValue: builtOutput.ptcValue,
 					contextHygiene: builtOutput.contextHygiene,
 					...(inlineDiff ? { inlineDiff } : {}),

@@ -48,6 +48,11 @@ export async function ensureHashInit(): Promise<void> {
 	await state.initPromise;
 }
 
+/** Synchronous predicate: true iff `ensureHashInit` has resolved and the hash function is loaded. */
+export function isHashlineInitialized(): boolean {
+	return getHashlineState().h32Fn !== null;
+}
+
 function xxh32(input: string): number {
 	const state = getHashlineState();
 	if (!state.h32Fn) throw new Error("Hash not initialized — call ensureHashInit() first");

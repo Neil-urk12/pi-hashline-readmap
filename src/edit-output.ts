@@ -2,7 +2,7 @@ import { countEditTypes, parseDiffStats } from "./edit-render-helpers.js";
 import { buildPtcEditResult, type SemanticSummary } from "./ptc-value.js";
 import { type ContextHygieneMetadata } from "./context-hygiene.js";
 import { buildMutationContextHygiene } from "./tool-output.js";
-import type { DiffData } from "./diff-data.js";
+import type { DiffData } from "./diff-builder.js";
 export interface BuildEditOutputInput {
   path: string;
   displayPath: string;

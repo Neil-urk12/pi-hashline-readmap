@@ -1,5 +1,5 @@
 import { computeLineHash, escapeControlCharsForDisplay } from "./hashline.js";
-import type { DiffData } from "./diff-data.js";
+import type { DiffData } from "./diff-builder.js";
 import type { ContextHygieneMetadata } from "./context-hygiene.js";
 
 export interface PtcLine {

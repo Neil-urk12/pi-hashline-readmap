@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { renderTuiDiff } from "../src/tui-diff-renderer.js";
-import type { DiffData } from "../src/diff-data.js";
+import type { DiffData } from "../src/diff-builder.js";
 
 const theme = { fg: (_: string, text: string) => text, bold: (text: string) => text };
 const diffData: DiffData = { version: 1, stats: { added: 2, removed: 1, context: 1 }, entries: [

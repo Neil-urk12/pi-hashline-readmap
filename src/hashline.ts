@@ -13,6 +13,7 @@
  */
 export {
 	ensureHashInit,
+	isHashlineInitialized,
 	computeLineHash,
 	escapeControlCharsForDisplay,
 	formatHashlineDisplay,

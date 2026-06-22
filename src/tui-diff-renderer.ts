@@ -1,5 +1,5 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
-import type { DiffData, DiffEntry, DiffSpan } from "./diff-data.js";
+import type { DiffData, DiffEntry, DiffSpan } from "./diff-builder.js";
 import { clampLineToWidth, clampLinesToWidth, normalizeWidth, wrapWithHangingIndent, type RendererTheme } from "./tui-render-utils.js";
 
 export type TuiDiffMode = "split" | "unified" | "compact" | "summary";

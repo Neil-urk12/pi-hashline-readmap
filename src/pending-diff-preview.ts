@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { generateDiffString, normalizeToLF, replaceText } from "./edit-diff.js";
+import { normalizeToLF, replaceText } from "./edit-diff.js";
 import { applyHashlineEdits, type HashlineEditItem } from "./hashline.js";
 import { replaceSymbol } from "./replace-symbol.js";
+import { buildAllDiffs, type DiffData, type DiffEntry } from "./diff-builder.js";
 
 export const PENDING_DIFF_MAX_BYTES = 1024 * 1024;
 
@@ -13,6 +14,8 @@ export interface PendingDiffPreviewData {
 	fileExistedBeforeWrite: boolean;
 	headerLabel: "pending edit" | "pending overwrite" | "pending create";
 	diff: string;
+	entries: DiffEntry[];
+	diffData: DiffData;
 }
 
 export type PendingDiffPreviewResult =
@@ -64,7 +67,7 @@ function buildData(
 	existed: boolean,
 	headerLabel: PendingDiffPreviewData["headerLabel"],
 ): PendingDiffPreviewResult {
-	const diff = generateDiffString(normalizeToLF(previousContent), normalizeToLF(nextContent)).diff;
+	const r = buildAllDiffs(previousContent, nextContent, filePath);
 	return {
 		type: "ok",
 		data: {
@@ -73,7 +76,9 @@ function buildData(
 			nextContent,
 			fileExistedBeforeWrite: existed,
 			headerLabel,
-			diff,
+			diff: r.diff,
+			entries: r.diffData.entries,
+			diffData: r.diffData,
 		},
 	};
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { DiffPreviewComponent } from "../src/tui-diff-component.js";
-import type { DiffData } from "../src/diff-data.js";
+import type { DiffData } from "../src/diff-builder.js";
 
 const identityTheme = { fg: (_kind: string, text: string) => text } as any;
 

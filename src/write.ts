@@ -13,12 +13,8 @@ import { type ContextHygieneMetadata } from "./context-hygiene.js";
 import { buildMutationContextHygiene } from "./tool-output.js";
 import { defineToolPromptMetadata } from "./tool-prompt-metadata.js";
 import { buildPendingWritePreviewData, buildWritePreviewKey, resolvePendingDiffPreview, type PendingDiffPreviewResult } from "./pending-diff-preview.js";
-import { generateCompactOrFullDiff, normalizeToLF, hasBareCarriageReturn } from "./edit-diff.js";
-import { buildDiffData, type DiffData } from "./diff-data.js";
-import type { InlineDiffMetadata } from "./diff-renderer/model.js";
-import { languageForPath } from "./diff-renderer/language.js";
-import { parseInlineDiff } from "./diff-renderer/parse.js";
-import { summarizeDiffCounts } from "./diff-renderer/summary.js";
+import { normalizeToLF, hasBareCarriageReturn } from "./edit-diff.js";
+import { MAX_INLINE_DIFF_CONTENT_CHARS, buildAllDiffs, type DiffData, type InlineDiffMetadata } from "./diff-builder.js";
 import { clampLineToWidth, clampLinesToWidth, isRendererExpanded, linkToolPath, renderToolLabel, summaryLine } from "./tui-render-utils.js";
 import { DiffPreviewComponent } from "./tui-diff-component.js";
 
@@ -51,32 +47,30 @@ function formatContentPreviewLines(content: string, theme: any): string[] {
 }
 
 function pendingWritePreviewParts(summary: string, preview: PendingDiffPreviewResult | undefined, expanded: boolean, theme: any): { lines: string[]; diffData?: DiffData } {
-  if (!preview || preview.type !== "ok") return { lines: summary.split("\n") };
-  // Pure creates (write to a new file) have no "old" side, so a diff-shaped
-  // preview is just noise. Show the new file's content with a dim gutter of
-  // line numbers when expanded; otherwise just a Ctrl+O hint.
-  const hasOldSide = preview.data.fileExistedBeforeWrite;
-  const headerLine = summaryLine(preview.data.headerLabel, { hidden: !expanded });
-  if (!hasOldSide) {
-    const lines = [summary, headerLine];
-    if (expanded) lines.push(...formatContentPreviewLines(preview.data.nextContent, theme));
-    return { lines };
-  }
-  const diffData = buildDiffData({ path: preview.data.filePath, oldContent: preview.data.previousContent, newContent: preview.data.nextContent, diff: preview.data.diff });
-  return { lines: [summary, headerLine], diffData: expanded ? diffData : undefined };
+	if (!preview || preview.type !== "ok") return { lines: summary.split("\n") };
+	// Pure creates (write to a new file) have no "old" side, so a diff-shaped
+	// preview is just noise. Show the new file's content with a dim gutter of
+	// line numbers when expanded; otherwise just a Ctrl+O hint.
+	const hasOldSide = preview.data.fileExistedBeforeWrite;
+	const headerLine = summaryLine(preview.data.headerLabel, { hidden: !expanded });
+	if (!hasOldSide) {
+		const lines = [summary, headerLine];
+		if (expanded) lines.push(...formatContentPreviewLines(preview.data.nextContent, theme));
+		return { lines };
+	}
+	return { lines: [summary, headerLine], diffData: expanded ? preview.data.diffData : undefined };
 }
 
 const MAX_LINES = 2000;
 const MAX_BYTES = 50 * 1024;
-const MAX_INLINE_DIFF_CONTENT_CHARS = 200_000;
 const WRITE_PROMPT_METADATA = defineToolPromptMetadata({
-  promptUrl: new URL("../prompts/write.md", import.meta.url),
-  promptSnippet: "Create or overwrite a complete file and return edit anchors",
-  promptGuidelines: [
-    "Use write to create new files or intentionally replace whole files.",
-    "Use edit instead of write for small changes or appends to existing files.",
-    "Remember write overwrites existing files without confirmation.",
-  ],
+	promptUrl: new URL("../prompts/write.md", import.meta.url),
+	promptSnippet: "Create or overwrite a complete file and return edit anchors",
+	promptGuidelines: [
+		"Use write to create new files or intentionally replace whole files.",
+		"Use edit instead of write for small changes or appends to existing files.",
+		"Remember write overwrites existing files without confirmation.",
+	],
 });
 
 type WriteDiffFields = {
@@ -112,18 +106,6 @@ function readPreviousTextForDiff(filePath: string): string {
   }
 }
 
-function generateWriteDiff(previousContent: string, nextContent: string): { diff: string; firstChangedLine: number | undefined } {
-  if (previousContent !== "") return generateCompactOrFullDiff(previousContent, nextContent);
-  const normalizedNext = normalizeToLF(nextContent);
-  if (normalizedNext === "") return { diff: "", firstChangedLine: undefined };
-  const lines = normalizedNext.split("\n");
-  if (lines[lines.length - 1] === "") lines.pop();
-  const width = String(lines.length).length;
-  return {
-    diff: lines.map((line, index) => `+${String(index + 1).padStart(width, " ")} ${line}`).join("\n"),
-    firstChangedLine: 1,
-  };
-}
 
 export interface WriteToolOptions {
   onFileAnchored?: (absolutePath: string) => void;
@@ -286,71 +268,50 @@ export async function executeWrite(opts: {
     }
   }
 
-  const displayPath = cwd ? relative(cwd, filePath) || filePath : filePath;
-  const normalizedPrevious = normalizeToLF(previousContent);
-  const normalizedNext = normalizeToLF(content);
-  const diffResult = generateWriteDiff(normalizedPrevious, normalizedNext);
-  const diffData = buildDiffData({
-    path: filePath,
-    oldContent: normalizedPrevious,
-    newContent: normalizedNext,
-    diff: diffResult.diff,
-  });
+	const displayPath = cwd ? relative(cwd, filePath) || filePath : filePath;
+	const normalizedPrevious = normalizeToLF(previousContent);
+	const normalizedNext = normalizeToLF(content);
+	const r = buildAllDiffs(normalizedPrevious, normalizedNext, filePath);
+	const diffData = r.diffData;
 
-  // Build inline diff metadata for the new diff-renderer.
-  // Skipped when contents are too large to render synchronously.
-  const language = languageForPath(filePath);
-  let inlineDiff: InlineDiffMetadata | undefined;
-  if (existedBeforeWrite) {
-    if (previousContent === content) {
-      inlineDiff = { kind: "no-change", path: filePath };
-    } else if (previousContent.length + content.length <= MAX_INLINE_DIFF_CONTENT_CHARS) {
-      const parsed = parseInlineDiff(previousContent, content);
-      inlineDiff = {
-        kind: "diff",
-        path: filePath,
-        summary: summarizeDiffCounts(parsed.added, parsed.removed),
-        language,
-        oldContent: previousContent,
-        newContent: content,
-      };
-    }
-  } else if (content.length <= MAX_INLINE_DIFF_CONTENT_CHARS) {
-    // Count display lines: drop the trailing blank produced by a terminal
-    // newline so the count matches what the user typed.
-    const rawLines = content.split("\n");
-    const displayLineCount =
-      rawLines.length > 0 && rawLines[rawLines.length - 1] === ""
-        ? rawLines.length - 1
-        : rawLines.length;
-    inlineDiff = {
-      kind: "new-file",
-      path: filePath,
-      language,
-      content,
-      lines: displayLineCount,
-    };
-  }
+	// Inline diff: buildAllDiffs covers "no-change" and "diff"; "new-file" stays at the caller.
+	const inlineDiff: InlineDiffMetadata | undefined = !existedBeforeWrite
+		? (content.length <= MAX_INLINE_DIFF_CONTENT_CHARS
+				? {
+						kind: "new-file",
+						path: filePath,
+						language: r.language ?? "text",
+						content,
+						lines: displayLineCount(content),
+					}
+				: undefined)
+		: r.inlineDiff;
 
-  return {
-    text,
-    warnings,
-    writeState: existedBeforeWrite ? "overwritten" : "created",
-    diff: diffResult.diff,
-    diffData,
-    ...(inlineDiff ? { inlineDiff } : {}),
-    ptcValue: {
-      tool: "write",
-      path: displayPath,
-      lines: ptcLines,
-      warnings: ptcWarnings,
-      diff: diffResult.diff,
-      diffData,
-      ...(requestMap !== undefined ? { map: { appended: mapAppended } } : {}),
-    },
-    contextHygiene,
-  };
+	return {
+		text,
+		warnings,
+		writeState: existedBeforeWrite ? "overwritten" : "created",
+		diff: r.diff,
+		diffData,
+		...(inlineDiff ? { inlineDiff } : {}),
+		ptcValue: {
+			tool: "write",
+			path: displayPath,
+			lines: ptcLines,
+			warnings: ptcWarnings,
+			diff: r.diff,
+			diffData,
+			...(requestMap !== undefined ? { map: { appended: mapAppended } } : {}),
+		},
+		contextHygiene,
+	};
 }
+
+function displayLineCount(content: string): number {
+	const rawLines = content.split("\n");
+	return rawLines.length > 0 && rawLines[rawLines.length - 1] === "" ? rawLines.length - 1 : rawLines.length;
+}
+
 
 export function registerWriteTool(pi: ExtensionAPI, options: WriteToolOptions = {}) {
   const ptc = {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildEditOutput } from "../src/edit-output.js";
-import type { DiffData } from "../src/diff-data.js";
+import type { DiffData } from "../src/diff-builder.js";
 
 describe("buildEditOutput diffData", () => {
   it("projects diffData into edit ptcValue without changing existing diff fields", () => {

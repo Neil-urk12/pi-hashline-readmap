@@ -24,7 +24,10 @@ describe("pending hashline edit preview", () => {
 		expect(projected.type).toBe("ok");
 		if (projected.type !== "ok") throw new Error(projected.reason);
 		expect(projected.data.nextContent).toContain("const value = 10;");
-		expect(projected.data.diff).toContain("-1 const value = 1;");
-		expect(projected.data.diff).toContain("+1 const value = 10;");
+		expect(projected.data.diff).toMatch(/^1:[0-9a-f]{3}\|const value = 1; → 1:[0-9a-f]{3}\|const value = 10;$/);
+		expect(projected.data.entries).toEqual([
+			{ kind: "remove", oldLine: 1, text: "const value = 1;" },
+			{ kind: "add", newLine: 1, text: "const value = 10;" },
+		]);
 	});
 });
