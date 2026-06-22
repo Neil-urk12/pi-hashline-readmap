@@ -8,6 +8,14 @@ import { registerWriteTool } from "./src/write.js";
 import { registerLsTool } from "./src/ls.js";
 import { registerFindTool } from "./src/find.js";
 import { registerBashRendererTool } from "./src/bash-renderer.js";
+import {
+	AUTO_READ_MAX_LINES,
+	formatAutoReadOutput,
+	isAutoReadEnabled,
+	toggleAutoRead,
+} from "./src/auto-read.js";
+import { readFile } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import { filterBashOutput } from "./src/rtk/bash-filter.js";
 import { buildRtkCompaction } from "./src/rtk/rtk-compaction.js";
 import { ensureBashOriginalOutputSnapshot, selectBashOriginalOutput } from "./src/rtk/bash-original-output.js";
@@ -34,6 +42,63 @@ import {
   formatDoomLoopMessage,
   recordToolCall,
 } from "./src/doom-loop.js";
+
+function isWriteToolResult(event: unknown): event is {
+	toolName: string;
+	toolCallId: string;
+	input?: unknown;
+	content: Array<{ type: string; text?: string }>;
+	isError?: boolean;
+	details?: unknown;
+} {
+	return !!event && typeof event === "object" && (event as { toolName?: unknown }).toolName === "write";
+}
+
+/**
+ * Append hashline-anchored anchors to a successful write result, when
+ * auto-read is enabled. Best-effort: any I/O failure is swallowed.
+ */
+async function maybeAppendAutoRead(
+	event: { toolName: string; input?: unknown; content: Array<{ type: string; text?: string }>; isError?: boolean; details?: unknown },
+	ctx: { cwd?: string },
+): Promise<{ content: Array<{ type: string; text?: string }>; details?: unknown } | undefined> {
+	if (!isAutoReadEnabled()) return undefined;
+	if (event.isError === true) return undefined;
+	const input = (event.input ?? {}) as Record<string, unknown>;
+	const filePath = input.path;
+	if (typeof filePath !== "string" || filePath.length === 0) return undefined;
+
+	try {
+		const cwd = ctx.cwd ?? process.cwd();
+		const absolutePath = isAbsolute(filePath) ? filePath : `${cwd}/${filePath}`;
+		const content = await readFile(absolutePath, "utf-8");
+		const formatted = formatAutoReadOutput(content, AUTO_READ_MAX_LINES);
+		if (!formatted) return undefined;
+
+		const newText = `\n\n--- Auto-read (hashline anchors) ---\n${formatted.output}${formatted.paginationHint}`;
+		const nextContent = [...event.content];
+		const lastTextIndex = (() => {
+			for (let i = nextContent.length - 1; i >= 0; i -= 1) {
+				const item = nextContent[i] as { type?: unknown; text?: unknown };
+				if (item.type === "text" && typeof item.text === "string") return i;
+			}
+			return -1;
+		})();
+		if (lastTextIndex >= 0) {
+			const item = nextContent[lastTextIndex] as { type: "text"; text: string };
+			nextContent[lastTextIndex] = { ...item, text: `${item.text}${newText}` };
+		} else {
+			nextContent.push({ type: "text", text: newText.trimStart() });
+		}
+		return { content: nextContent, details: event.details };
+	} catch (err) {
+		// Best-effort: swallow expected I/O errors (ENOENT, EACCES, etc.) so a
+		// failed auto-read never surfaces to the user. Let programmer errors
+		// (TypeError, ReferenceError) propagate so we notice them in tests.
+		if (!err || typeof err !== "object" || !("code" in err)) throw err;
+		return undefined;
+	}
+}
 
 function isBashToolResult(event: unknown): event is {
   toolName: string;
@@ -233,7 +298,17 @@ export default function piHashlineReadmapExtension(pi: ExtensionAPI): void {
     return { messages };
   });
 
-  (pi as any).on("tool_result", (event: any) => {
+  (pi as any).on("tool_result", async (event: any) => {
+    // Auto-read after write: append hashline anchors to the result so the
+    // model can chain edits without a separate read call. Off by default;
+    // toggled via PI_HASHLINE_AUTO_READ or /toggle-auto-read.
+    if (isWriteToolResult(event)) {
+      const augmented = await maybeAppendAutoRead(event, { cwd: process.cwd() });
+      if (augmented) {
+        event.content = augmented.content;
+        if (augmented.details !== undefined) event.details = augmented.details;
+      }
+    }
     const doomLoop = consumeDoomLoopWarning(doomLoopState, event.toolCallId);
     if (!isBashToolResult(event)) {
       const contextHygiene = contextHygieneFromDetails(event.details);
@@ -318,5 +393,24 @@ export default function piHashlineReadmapExtension(pi: ExtensionAPI): void {
         ptcValue: { ...existingPtcValue, rtkCompaction: pipelineResult.details.rtkCompaction },
       },
     };
+});
+
+  // Slash command to toggle auto-read after write at runtime.
+  (pi as any).registerCommand?.("toggle-auto-read", {
+    description: "Toggle automatic hashline anchors after write operations",
+    handler: async (_args: unknown, ctx: { ui?: { notify?: (msg: string, level?: string) => void } }) => {
+      const enabled = toggleAutoRead();
+      ctx.ui?.notify?.(`Auto-read after write: ${enabled ? "enabled" : "disabled"}`, "info");
+    },
+  });
+
+  // Session_start debug notification — opt in via PI_HASHLINE_DEBUG=1 (or
+  // "true") to surface a "Hashline Readmap active" notification at session
+  // start. Useful when verifying that an extension session actually picked
+  // up our wiring.
+  (pi as any).on("session_start", async (_event: unknown, ctx: { ui?: { notify?: (msg: string, level?: string) => void } }) => {
+    const flag = process.env.PI_HASHLINE_DEBUG;
+    if (flag !== "1" && flag !== "true") return;
+    ctx.ui?.notify?.("Hashline Readmap active", "info");
   });
 }
