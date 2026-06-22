@@ -7,6 +7,7 @@ import { createPatch } from "diff";
 import { detectLineEnding, normalizeToLF, replaceText, restoreLineEndings, stripBom } from "./edit-diff.js";
 import { HashlineMismatchError, PasteDetectedError, applyHashlineEdits, computeLineHash, ensureHashInit, parseLineRef, type HashlineEditItem, escapeControlCharsForDisplay } from "./hashline.js";
 import { atomicWriteFile } from "./atomic-write.js";
+import { detectBoundaryWarningsAsStrings } from "./edit-boundary.js";
 import { resolveToCwd } from "./path-utils.js";
 import { throwIfAborted } from "./runtime.js";
 import { buildEditOutput } from "./edit-output.js";
@@ -531,6 +532,11 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			if (legacyNormalizationWarning) warnings.push(legacyNormalizationWarning);
 			if (replaceWarnings.length) warnings.push(...replaceWarnings);
 			if (replaceSymbolWarnings.length) warnings.push(...replaceSymbolWarnings);
+			// Boundary-duplication check (mirrors pi-hashline-edit-pro's strict
+			// patch validation: warn when the replacement duplicates the line
+			// on either side, producing adjacent identical lines).
+			const boundaryWarnings = detectBoundaryWarningsAsStrings(originalNormalized, edits);
+			if (boundaryWarnings.length) warnings.push(...boundaryWarnings);
 			if (syntaxWarning) warnings.push(syntaxWarning);
 			// Semantic classification
 			const internalClassification = classifyEdit(originalNormalized, result);
