@@ -1,57 +1,119 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
-import { computeLineHash, ensureHashInit } from "../src/hashline.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-const fsMock = vi.hoisted(() => ({
-  readFile: vi.fn(),
-  writeFile: vi.fn(),
-}));
-
-vi.mock("fs/promises", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("fs/promises")>();
-  return { ...actual, readFile: fsMock.readFile, writeFile: fsMock.writeFile };
-});
-
-import { registerEditTool } from "../src/edit.js";
-
-function captureEditTool() {
-  let tool: any;
-  registerEditTool({ registerTool(def: any) { tool = def; } } as any, { wasReadInSession: () => true });
-  if (!tool) throw new Error("edit tool was not registered");
-  return tool;
+function tick(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-describe("edit postEditVerify mismatch", () => {
-  beforeEach(async () => {
-    await ensureHashInit();
-    fsMock.readFile.mockReset();
-    fsMock.writeFile.mockReset();
-  });
+describe("edit postEditVerify mismatch (mocked fs)", () => {
+	afterEach(() => {
+		vi.doUnmock("fs/promises");
+		vi.resetModules();
+	});
 
-  it("returns a structured error when persisted content differs after the write completed", async () => {
-    const tool = captureEditTool();
-    fsMock.readFile
-      .mockResolvedValueOnce(Buffer.from("alpha\nbeta", "utf8"))
-      .mockResolvedValueOnce("tampered\nbeta");
-    fsMock.writeFile.mockResolvedValue(undefined);
-    const anchor = `1:${computeLineHash(1, "alpha")}`;
+	it("returns a structured error when persisted content differs after the write completed", async () => {
+		vi.resetModules();
 
-    const result = await tool.execute(
-      "tc",
-      { path: "/tmp/post-edit-mismatch.txt", postEditVerify: true, edits: [{ set_line: { anchor, new_text: "ALPHA" } }] },
-      new AbortController().signal,
-      () => {},
-      { cwd: process.cwd() },
-    );
+		const filePath = "/virtual/post-edit-mismatch.txt";
+		const originalContent = "alpha\nbeta";
+		const writtenContent = "ALPHA\nbeta";
+		// Simulate a concurrent write between our write and our readback:
+		// the file's on-disk content is now different from what we just wrote.
+		const tamperedContent = "tampered\nbeta";
 
-    expect(fsMock.writeFile).toHaveBeenCalledTimes(1);
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("write completed but post-edit verification did not confirm the intended content");
-    expect(result.details.ptcValue.ok).toBe(false);
-    expect(result.details.ptcValue.error.code).toBe("post-edit-verification-mismatch");
-    expect(result.details.ptcValue.error.details).toEqual({ expectedLength: "ALPHA\nbeta".length, actualLength: "tampered\nbeta".length });
-    expect(result.details.contextHygiene.classification).toBe("mutation");
-    expect(result.details.contextHygiene.resources).toEqual([
-      { kind: "file", path: "/tmp/post-edit-mismatch.txt", key: "file:/tmp/post-edit-mismatch.txt" },
-    ]);
-  });
+		const virtualFs: Record<string, string> = { [filePath]: originalContent };
+		let readCount = 0;
+
+		vi.doMock("fs/promises", () => ({
+			readFile: vi.fn(async (p: string) => {
+				await tick();
+				if (!(p in virtualFs)) {
+					const e: any = new Error(`ENOENT: ${p}`);
+					e.code = "ENOENT";
+					throw e;
+				}
+				readCount += 1;
+				// First read (pre-edit) returns original; second read (post-write
+				// readback) returns tampered content simulating a concurrent write.
+				if (readCount === 2) return Buffer.from(tamperedContent, "utf-8");
+				return Buffer.from(virtualFs[p], "utf-8");
+			}),
+			writeFile: vi.fn(async (p: string, content: string | Buffer) => {
+				await tick();
+				virtualFs[p] = content.toString();
+			}),
+			rename: vi.fn(async (src: string, dst: string) => {
+				await tick();
+				if (!(src in virtualFs)) {
+					const e: any = new Error(`ENOENT: ${src}`);
+					e.code = "ENOENT";
+					throw e;
+				}
+				virtualFs[dst] = virtualFs[src];
+				delete virtualFs[src];
+			}),
+			unlink: vi.fn(async (p: string) => {
+				await tick();
+				delete virtualFs[p];
+			}),
+			lstat: vi.fn(async (p: string) => {
+				if (!(p in virtualFs)) {
+					const e: any = new Error(`ENOENT: ${p}`);
+					e.code = "ENOENT";
+					throw e;
+				}
+				return { isSymbolicLink: () => false } as any;
+			}),
+			stat: vi.fn(async (p: string) => {
+				if (!(p in virtualFs)) {
+					const e: any = new Error(`ENOENT: ${p}`);
+					e.code = "ENOENT";
+					throw e;
+				}
+				return { mode: 0o644, nlink: 1, ino: 1 } as any;
+			}),
+			realpath: vi.fn(async (p: string) => p),
+			access: vi.fn(async () => undefined),
+			constants: { W_OK: 2 },
+			open: vi.fn(async () => {
+				throw new Error("open should not be called when nlink===1");
+			}),
+		}));
+
+		const { registerEditTool } = await import("../src/edit.js");
+		const { computeLineHash, ensureHashInit } = await import("../src/hashline.js");
+		await ensureHashInit();
+
+		let tool: any;
+		registerEditTool(
+			{ registerTool(def: any) { tool = def; } } as any,
+			{ wasReadInSession: () => true, syntaxValidate: "off" },
+		);
+		if (!tool) throw new Error("edit tool was not registered");
+
+		const anchor = `1:${computeLineHash(1, "alpha")}`;
+
+		const result = await tool.execute(
+			"tc",
+			{
+				path: filePath,
+				postEditVerify: true,
+				edits: [{ set_line: { anchor, new_text: "ALPHA" } }],
+			},
+			new AbortController().signal,
+			() => {},
+			{ cwd: "/" },
+		);
+
+		expect(result.isError).toBe(true);
+		expect(result.details.ptcValue.ok).toBe(false);
+		expect(result.details.ptcValue.error.code).toBe("post-edit-verification-mismatch");
+		expect(result.details.ptcValue.error.details).toEqual({
+			expectedLength: writtenContent.length,
+			actualLength: tamperedContent.length,
+		});
+		expect(result.details.contextHygiene.classification).toBe("mutation");
+		expect(result.details.contextHygiene.resources).toEqual([
+			{ kind: "file", path: filePath, key: `file:${filePath}` },
+		]);
+	});
 });

@@ -363,7 +363,7 @@ describe("bash contextHygiene metadata", () => {
       isError: false,
     })).not.toThrow();
 
-    const result = handlers.tool_result({
+    const result = await handlers.tool_result({
       type: "tool_result" as const,
       toolName: "bash",
       toolCallId: "bash-missing-input-2",
