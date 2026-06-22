@@ -2,10 +2,11 @@ import { withFileMutationQueue, type ExtensionAPI, type EditToolDetails, type To
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import { defineToolPromptMetadata } from "./tool-prompt-metadata.js";
-import { readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
+import { readFile as fsReadFile } from "fs/promises";
 import { createPatch } from "diff";
 import { detectLineEnding, normalizeToLF, replaceText, restoreLineEndings, stripBom } from "./edit-diff.js";
 import { HashlineMismatchError, PasteDetectedError, applyHashlineEdits, computeLineHash, ensureHashInit, parseLineRef, type HashlineEditItem, escapeControlCharsForDisplay } from "./hashline.js";
+import { atomicWriteFile } from "./atomic-write.js";
 import { resolveToCwd } from "./path-utils.js";
 import { throwIfAborted } from "./runtime.js";
 import { buildEditOutput } from "./edit-output.js";
@@ -474,7 +475,7 @@ export function registerEditTool(pi: ExtensionAPI, options: EditToolOptions = {}
 			}
 			const writeContent = bom + restoreLineEndings(result, originalEnding);
 			try {
-				await fsWriteFile(absolutePath, writeContent, "utf-8");
+				await atomicWriteFile(absolutePath, writeContent);
 			} catch (err: any) {
 				const wrapped = wrapWriteError(err, path);
 				const code =

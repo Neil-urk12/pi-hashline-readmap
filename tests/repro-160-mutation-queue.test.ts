@@ -15,15 +15,59 @@ describe("repro 160 — Pi file mutation queue integration", () => {
 
     const filePath = "/virtual/race.txt";
     let fileContent = "alpha\nbeta\n";
+    // Virtual in-memory filesystem keyed by the actual path. Each atomic
+    // write creates a sibling temp file that rename(2) commits to the target.
+    const virtualFs: Record<string, string> = { [filePath]: fileContent };
 
     vi.doMock("fs/promises", () => ({
-      readFile: vi.fn(async () => {
+      readFile: vi.fn(async (p: string) => {
         await tick();
-        return Buffer.from(fileContent, "utf-8");
+        if (!(p in virtualFs)) {
+          const e: any = new Error(`ENOENT: ${p}`);
+          e.code = "ENOENT";
+          throw e;
+        }
+        return Buffer.from(virtualFs[p], "utf-8");
       }),
-      writeFile: vi.fn(async (_path: string, content: string | Buffer) => {
+      writeFile: vi.fn(async (p: string, content: string | Buffer) => {
         await tick();
-        fileContent = content.toString();
+        virtualFs[p] = content.toString();
+      }),
+      rename: vi.fn(async (src: string, dst: string) => {
+        await tick();
+        if (!(src in virtualFs)) {
+          const e: any = new Error(`ENOENT: ${src}`);
+          e.code = "ENOENT";
+          throw e;
+        }
+        virtualFs[dst] = virtualFs[src];
+        delete virtualFs[src];
+      }),
+      unlink: vi.fn(async (p: string) => {
+        await tick();
+        delete virtualFs[p];
+      }),
+      lstat: vi.fn(async (p: string) => {
+        if (!(p in virtualFs)) {
+          const e: any = new Error(`ENOENT: ${p}`);
+          e.code = "ENOENT";
+          throw e;
+        }
+        return { isSymbolicLink: () => false } as any;
+      }),
+      stat: vi.fn(async (p: string) => {
+        if (!(p in virtualFs)) {
+          const e: any = new Error(`ENOENT: ${p}`);
+          e.code = "ENOENT";
+          throw e;
+        }
+        return { mode: 0o644, nlink: 1, ino: 1 } as any;
+      }),
+      realpath: vi.fn(async (p: string) => p),
+      access: vi.fn(async () => undefined),
+      constants: { W_OK: 2 },
+      open: vi.fn(async () => {
+        throw new Error("open should not be called when nlink===1");
       }),
     }));
 
@@ -52,6 +96,6 @@ describe("repro 160 — Pi file mutation queue integration", () => {
     const results = await Promise.all([resultPromiseA, resultPromiseB]);
 
     expect(results.map((result: any) => result.isError ?? false)).toEqual([false, false]);
-    expect(fileContent).toBe("ALPHA\nBETA\n");
+    expect(virtualFs[filePath]).toBe("ALPHA\nBETA\n");
   });
 });
